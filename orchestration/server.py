@@ -101,48 +101,50 @@ class InterviewResponse(BaseModel):
 # ORCHESTRATION ENDPOINTS
 # ============================================================================
 
-def execute_workflow_sync(workflow_id: str, initial_state: WorkflowState, agent_specs: Optional[List[Dict[str, str]]] = None):
-    """Execute workflow in a background thread - runs the complete graph execution"""
-    print(f"[DEBUG] Starting workflow execution for {workflow_id}")
+def run_workflow_thread(workflow_id: str, initial_state: dict):
+    """Run workflow in a thread, saving state after each node completes"""
     try:
-        # Build the graph
-        print(f"[DEBUG] Building graph for {workflow_id}")
-        if agent_specs:
-            graph = build_custom_orchestrator_graph(agent_specs)
-            print(f"[DEBUG] Built custom graph with agents: {[s['name'] for s in agent_specs]}")
-        else:
-            graph = build_orchestrator_graph()
-            print(f"[DEBUG] Built default orchestrator graph")
+        from orchestration.graph import build_orchestrator_graph
+        import time
 
+        graph = build_orchestrator_graph()
         config = {"configurable": {"thread_id": workflow_id}}
 
-        print(f"[DEBUG] Starting graph.invoke for {workflow_id}")
+        print(f"[WORKFLOW] {workflow_id} starting...")
 
-        # Invoke the graph - this will run all nodes in sequence and return the final state
+        # Run the graph synchronously - all nodes execute in sequence
+        print(f"[WORKFLOW] {workflow_id} invoking graph.invoke()...")
         final_state = graph.invoke(initial_state, config)
 
-        # Save the final state to the store - update from final_state with all accumulated logs
-        final_dict = dict(final_state) if hasattr(final_state, 'items') else final_state
-        workflows_store[workflow_id]["state"] = final_dict
+        # Convert to dict and ensure it has all fields
+        if hasattr(final_state, 'items'):
+            final_state = dict(final_state)
+        else:
+            final_state = final_state if isinstance(final_state, dict) else {}
+
+        # Debug: print what we got back
+        log_count = len(final_state.get('execution_log', []))
+        result_count = len(final_state.get('results', {}))
+        print(f"[WORKFLOW] {workflow_id} invoke() returned: status={final_state.get('status')}, results={result_count}, logs={log_count}")
+        print(f"[WORKFLOW] {workflow_id} final_state keys: {list(final_state.keys())}")
+
+        # Set final status
+        final_state["status"] = final_state.get("status", "COMPLETED")
+
+        # Save final state to store
+        workflows_store[workflow_id]["state"] = final_state
         workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
 
-        # Ensure status is updated
-        if final_dict.get("status") != "COMPLETED":
-            final_dict["status"] = "COMPLETED"
-            workflows_store[workflow_id]["state"] = final_dict
-
-        log_count = len(final_state.get('execution_log', []))
-        print(f"[DEBUG] Workflow {workflow_id} COMPLETED - status: {final_state.get('status')}, log_entries: {log_count}, results: {list(final_state.get('results', {}).keys())}")
+        print(f"[WORKFLOW] {workflow_id} COMPLETED - Saved state with {result_count} results and {log_count} logs")
 
     except Exception as e:
         import traceback
-        print(f"[DEBUG] Workflow {workflow_id} FAILED with exception: {str(e)}")
-        print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
-        initial_state["status"] = "FAILED"
-        initial_state["error"] = str(e)
-        workflows_store[workflow_id]["state"] = initial_state
-        workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
-        print(f"[DEBUG] Error state saved for {workflow_id}")
+        print(f"[WORKFLOW ERROR] {workflow_id}: {str(e)}")
+        print(traceback.format_exc())
+        if workflow_id in workflows_store:
+            workflows_store[workflow_id]["state"]["status"] = "FAILED"
+            workflows_store[workflow_id]["state"]["error"] = str(e)
+            workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
 
 
 @app.post("/orchestration/start", response_model=WorkflowResponse)
@@ -192,12 +194,13 @@ async def start_workflow(request: StartWorkflowRequest):
         "agent_specs": request.agent_specs,  # Store for reference
     }
 
-    # Start workflow execution in a background thread
+    # Start workflow execution in a background thread using stream()
     thread = threading.Thread(
-        target=execute_workflow_sync,
-        args=(workflow_id, initial_state, request.agent_specs),
+        target=run_workflow_thread,
+        args=(workflow_id, initial_state),
         daemon=True
     )
+    thread.daemon = True
     thread.start()
 
     return WorkflowResponse(
