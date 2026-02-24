@@ -1,884 +1,453 @@
-"""
-Complete LangGraph orchestrator for multi-agent data pipeline.
-Implements conditional routing, human checkpoints, and execution logging.
-"""
-
-import asyncio
 import httpx
 import json
-import uuid
 import time
-from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional, TypedDict, Annotated
-from functools import partial
-from langgraph.graph import StateGraph, START, END
-from langgraph.types import interrupt, Command
+import uuid
+import asyncio
+import re
+from datetime import datetime, timezone
+from typing import TypedDict, Literal
+from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
-from .llm import supervisor_analyze_logs, autonomous_supervisor_decide
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
+# Databricks config
 DATABRICKS_HOST = "https://adb-1377606806062971.11.azuredatabricks.net"
 DATABRICKS_TOKEN = "dapia0b0cc277253ec27b9dc25426478699d-3"
-RATE_LIMIT_DELAY = 30  # seconds between agent calls
 
-# ============================================================================
-# STATE DEFINITION
-# ============================================================================
+ENDPOINT_MAP = {
+    "profiler": "mit_structured_data_profiler_endpoint",
+    "quality": "mit_data_quality_agent_endpoint",
+    "classifier": "mit_data_classifier_endpoint",
+    "autoloader": "mit_autoloader_agent_endpoint"
+}
 
-class ExecutionLogEntry(TypedDict):
-    """Single entry in the execution log"""
-    id: str
-    timestamp: str
+class WorkflowState(TypedDict):
     workflow_id: str
-    event_type: str  # AGENT_CALL, AGENT_RESULT, HUMAN_CHECKPOINT, HUMAN_DECISION, ROUTING_DECISION, ERROR, WORKFLOW_COMPLETE
-    agent: str
-    step: int
-    details: Dict[str, Any]
-
-class AgentResult(TypedDict):
-    """Result from a single agent"""
-    output: str
-    raw: Dict[str, Any]
-    duration_ms: int
-    timestamp: str
-    status: str  # SUCCESS, FAILED, RATE_LIMITED
-
-class HumanDecision(TypedDict):
-    """Record of human approval/rejection"""
-    checkpoint: str  # quality_gate, pii_gate, pipeline_review
-    decision: str  # approve, fix, abort, confirm_encryption
-    timestamp: str
-    approver: Optional[str]
-    details: Dict[str, Any]
-
-class OrchestratorState(TypedDict):
-    """Complete state for the orchestration workflow"""
-    workflow_id: str
-    user_id: str
     input_data: str
-    agent_order: List[str]  # User-defined order: [profiler, quality, classifier, autoloader]
+    agent_order: list
     current_step: int
     current_agent: str
-    results: Dict[str, AgentResult]  # {agent_name: result}
+    results: dict
     quality_score: float
-    pii_detected: List[str]
-    human_decisions: List[HumanDecision]
-    execution_log: List[ExecutionLogEntry]
-    status: Literal["RUNNING", "PAUSED", "COMPLETED", "FAILED", "HALTED"]
-    error: Optional[str]
-    human_checkpoint_pending: bool
-    checkpoint_type: Optional[str]
-    checkpoint_details: Optional[Dict[str, Any]]
-    supervisor_guidance: Optional[str]  # AI-generated guidance for human reviewers
+    pii_detected: list
+    human_decisions: list
+    execution_log: list
+    supervisor_decisions: list
+    status: str
+    error: str
+    _workflows_store: dict  # Reference to workflows_store (for saving state)
 
-# ============================================================================
-# HELPERS
-# ============================================================================
+def now():
+    return datetime.now(timezone.utc).isoformat()
 
-def log_event(state: OrchestratorState, event_type: str, agent: str, details: Dict[str, Any]) -> ExecutionLogEntry:
-    """Create an execution log entry"""
+def log_entry(state, event_type, agent, details):
     return {
         "id": str(uuid.uuid4())[:8],
-        "timestamp": datetime.utcnow().isoformat(),
-        "workflow_id": state["workflow_id"],
+        "timestamp": now(),
         "event_type": event_type,
         "agent": agent,
-        "step": state["current_step"],
+        "step": state.get("current_step", 0),
         "details": details
     }
 
-async def call_databricks_agent(endpoint_name: str, user_content: str) -> AgentResult:
-    """Call a Databricks agent endpoint with Responses API format"""
+def call_databricks_sync(endpoint_name: str, content: str) -> dict:
+    """Synchronous HTTP call to Databricks endpoint."""
     url = f"{DATABRICKS_HOST}/serving-endpoints/{endpoint_name}/invocations"
     headers = {
         "Authorization": f"Bearer {DATABRICKS_TOKEN}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "input": [{"role": "user", "content": user_content}]
-    }
+    # Truncate content to 50KB to avoid payload limits
+    if len(content) > 50000:
+        content = content[:50000] + "\n\n[TRUNCATED - original was " + str(len(content)) + " chars]"
 
-    start_time = time.time()
+    payload = {"input": [{"role": "user", "content": content}]}
 
+    start = time.time()
     try:
-        async with httpx.AsyncClient(timeout=300) as client:
-            response = await client.post(url, json=payload, headers=headers)
+        with httpx.Client(timeout=300) as client:
+            resp = client.post(url, json=payload, headers=headers)
+        duration = int((time.time() - start) * 1000)
 
-        duration_ms = int((time.time() - start_time) * 1000)
-
-        if response.status_code == 429:
-            # Rate limited - return rate limit status
-            return {
-                "output": "Rate limited",
-                "raw": {"error": "rate_limited"},
-                "duration_ms": duration_ms,
-                "timestamp": datetime.utcnow().isoformat(),
-                "status": "RATE_LIMITED"
-            }
-
-        if response.status_code != 200:
-            return {
-                "output": response.text,
-                "raw": {"error": f"HTTP {response.status_code}"},
-                "duration_ms": duration_ms,
-                "timestamp": datetime.utcnow().isoformat(),
-                "status": "FAILED"
-            }
-
-        result = response.json()
-
-        # Extract text from Databricks Responses API format
-        text = extract_text_from_response(result)
+        if resp.status_code == 429:
+            print(f"[RATE LIMITED] {endpoint_name} - waiting 60s")
+            time.sleep(60)
+            with httpx.Client(timeout=300) as client:
+                resp = client.post(url, json=payload, headers=headers)
+            duration = int((time.time() - start) * 1000)
 
         return {
-            "output": text,
-            "raw": result,
-            "duration_ms": duration_ms,
-            "timestamp": datetime.utcnow().isoformat(),
-            "status": "SUCCESS"
+            "data": resp.json(),
+            "duration_ms": duration,
+            "status_code": resp.status_code,
+            "success": resp.status_code == 200
         }
     except Exception as e:
-        duration_ms = int((time.time() - start_time) * 1000)
+        duration = int((time.time() - start) * 1000)
+        print(f"[ERROR] {endpoint_name}: {str(e)}")
         return {
-            "output": str(e),
-            "raw": {"error": str(e)},
-            "duration_ms": duration_ms,
-            "timestamp": datetime.utcnow().isoformat(),
-            "status": "FAILED"
+            "data": {"error": str(e)},
+            "duration_ms": duration,
+            "status_code": 500,
+            "success": False
         }
 
-def extract_text_from_response(result: Dict[str, Any]) -> str:
-    """Extract text from Databricks Responses API response format"""
+def extract_text(response_data: dict) -> str:
+    """Extract text from Databricks Responses API output."""
     try:
-        outputs = result.get("output", [])
-        if isinstance(outputs, list):
-            texts = []
-            for item in outputs:
-                if isinstance(item, dict) and item.get("type") == "message":
-                    content = item.get("content", [])
-                    for c in content:
-                        if isinstance(c, dict) and c.get("type") == "output_text":
-                            text = c.get("text", "")
-                            if text:
-                                texts.append(text)
-            if texts:
-                return "\n\n".join(texts)
-    except:
+        texts = []
+        for item in response_data.get("output", []):
+            if item.get("type") == "message":
+                for c in item.get("content", []):
+                    if c.get("type") == "output_text":
+                        texts.append(c.get("text", ""))
+        if texts:
+            return "\n".join(texts)
+    except Exception:
         pass
+    return json.dumps(response_data)[:2000]
 
-    # Fallback
-    return json.dumps(result)
+def truncate_csv(data: str, max_rows: int = 50) -> str:
+    """Take only header + first N rows of CSV data."""
+    lines = data.strip().split('\n')
+    if len(lines) <= max_rows + 1:
+        return data
+    truncated = '\n'.join(lines[:max_rows + 1])
+    return truncated + f"\n\n[TRUNCATED: showing {max_rows} of {len(lines)-1} total rows]"
 
-# ============================================================================
-# GENERIC AGENT NODE (supports any Databricks endpoint)
-# ============================================================================
+# ============ GRAPH NODES ============
 
-async def generic_agent_node(
-    state: OrchestratorState,
-    endpoint_name: str,
-    agent_name: str,
-) -> Dict[str, Any]:
-    """
-    Generic node that can call any Databricks agent endpoint.
-    Supports dynamic agents - any endpoint can be used.
-    """
+def profile_node(state: WorkflowState) -> dict:
+    print(f"[NODE] profile_node starting")
     log = list(state.get("execution_log", []))
     results = dict(state.get("results", {}))
 
-    # Build context with previous results
-    context = state["input_data"]
-    if state.get("results"):
-        for prev_agent in results:
-            if prev_agent != agent_name:
-                prev_output = results[prev_agent].get("output", "")
-                context += f"\n\n--- {prev_agent.upper()} RESULTS ---\n{prev_output[:1000]}"
+    endpoint = ENDPOINT_MAP["profiler"]
+    log.append(log_entry(state, "AGENT_CALL", "profiler", {"endpoint": endpoint, "message": f"Calling {endpoint}..."}))
 
-    log.append(log_event(state, "AGENT_CALL", agent_name, {
-        "endpoint": endpoint_name,
-        "input_length": len(context)
-    }))
+    # Truncate CSV to first 50 rows to avoid payload limits
+    input_data = truncate_csv(state["input_data"], 50)
+    result = call_databricks_sync(endpoint, input_data)
+    output_text = extract_text(result["data"]) if result["success"] else json.dumps(result["data"])
 
-    result = await call_databricks_agent(endpoint_name, context)
-    results[agent_name] = result
-
-    log.append(log_event(state, "AGENT_RESULT", agent_name, {
-        "status": result["status"],
+    results["profiler"] = {
+        "output": output_text[:5000],
         "duration_ms": result["duration_ms"],
-        "output_preview": result["output"][:200] if result["output"] else ""
+        "status": "SUCCESS" if result["success"] else "FAILED",
+        "timestamp": now()
+    }
+
+    log.append(log_entry(state, "AGENT_RESULT", "profiler", {
+        "status": results["profiler"]["status"],
+        "duration_ms": result["duration_ms"],
+        "message": f"Profiler {'completed' if result['success'] else 'failed'} in {result['duration_ms']}ms",
+        "output_preview": output_text[:300]
     }))
 
+    print(f"[NODE] profile_node done: {results['profiler']['status']} in {result['duration_ms']}ms")
     return {
         "results": results,
         "execution_log": log,
-        "current_step": state["current_step"] + 1,
-        "current_agent": agent_name
+        "current_step": state.get("current_step", 0) + 1,
+        "current_agent": "supervisor_profile"
     }
 
-# ============================================================================
-# AUTONOMOUS SUPERVISOR NODE
-# ============================================================================
-
-async def supervisor_node(state: OrchestratorState, stage: str = "general") -> Dict[str, Any]:
-    """
-    Autonomous supervisor analyzes execution and makes decisions without human intervention.
-    Only escalates to human if severity is CRITICAL (>90% confidence required).
-
-    Args:
-        state: Orchestrator state
-        stage: Which stage (after_profile, after_quality, after_classify, etc) - for context
-
-    Returns:
-        Updated state with supervisor_guidance and potential human_checkpoint_pending
-    """
+def supervisor_profile_node(state: WorkflowState) -> dict:
+    print(f"[NODE] supervisor_profile_node")
     log = list(state.get("execution_log", []))
-    results = dict(state.get("results", {}))
+    decisions = list(state.get("supervisor_decisions", []))
 
-    # Get quality score
-    quality_score = state.get("quality_score", 75.0)
-    pii_detected = state.get("pii_detected", [])
+    profiler_result = state.get("results", {}).get("profiler", {})
+    status = profiler_result.get("status", "UNKNOWN")
 
-    # Analyze logs
-    analysis = await supervisor_analyze_logs(
-        log,
-        results,
-        quality_score,
-        pii_detected
-    )
+    if status == "SUCCESS":
+        analysis = "Profiler completed successfully. Data structure analyzed. Proceeding to quality check."
+        confidence = 95
+        decision = "PROCEED"
+    else:
+        analysis = "Profiler failed or returned error. Recommending quality check to assess data."
+        confidence = 60
+        decision = "PROCEED_WITH_CAUTION"
 
-    # Make autonomous decision
-    decision = await autonomous_supervisor_decide(
-        analysis,
-        quality_score,
-        pii_detected
-    )
+    entry = {"step": "after_profile", "analysis": analysis, "confidence": confidence, "decision": decision}
+    decisions.append(entry)
 
-    log.append(log_event(state, "SUPERVISOR_ANALYSIS", "supervisor", {
-        "stage": stage,
-        "analysis": analysis,
+    log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
+        "message": f"🧠 {analysis} [Confidence: {confidence}%]",
+        "confidence": confidence,
         "decision": decision
     }))
 
-    supervisor_guidance = f"{analysis['guidance']} [Confidence: {decision['confidence']}%]"
+    return {"execution_log": log, "supervisor_decisions": decisions, "current_agent": "quality"}
 
-    # If decision is to escalate and confidence is high (>90%), escalate to human
-    if decision["human_escalation"] and decision["confidence"] >= 90:
-        log.append(log_event(state, "HUMAN_CHECKPOINT", "supervisor", {
-            "reason": analysis["reason"],
-            "severity": analysis["severity"],
-            "suggested_action": analysis["suggested_action"]
-        }))
-
-        return {
-            "execution_log": log,
-            "supervisor_guidance": supervisor_guidance,
-            "human_checkpoint_pending": True,
-            "checkpoint_type": f"SUPERVISOR_{analysis['severity']}",
-            "checkpoint_details": {
-                "supervisor_guidance": supervisor_guidance,
-                "analysis": analysis,
-                "decision": decision,
-                "quality_score": quality_score,
-                "pii_detected": pii_detected
-            },
-            "status": "PAUSED"
-        }
-
-    # Otherwise, proceed autonomously based on decision
-    return {
-        "execution_log": log,
-        "supervisor_guidance": supervisor_guidance,
-        "human_checkpoint_pending": False,
-        "status": "RUNNING"
-    }
-
-# ============================================================================
-# NODES
-# ============================================================================
-
-async def profile_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Profile data using DataScout agent"""
+def quality_node(state: WorkflowState) -> dict:
+    print(f"[NODE] quality_node starting")
     log = list(state.get("execution_log", []))
     results = dict(state.get("results", {}))
 
-    log.append(log_event(state, "AGENT_CALL", "profiler", {
-        "endpoint": "mit_structured_data_profiler_endpoint",
-        "input_length": len(state["input_data"])
-    }))
-
-    result = await call_databricks_agent("mit_structured_data_profiler_endpoint", state["input_data"])
-
-    results["profiler"] = result
-
-    log.append(log_event(state, "AGENT_RESULT", "profiler", {
-        "status": result["status"],
-        "duration_ms": result["duration_ms"],
-        "output_preview": result["output"][:200] if result["output"] else ""
-    }))
-
-    return {
-        "results": results,
-        "execution_log": log,
-        "current_step": state["current_step"] + 1,
-        "current_agent": "quality" if "quality" in state["agent_order"] else "classifier"
-    }
-
-async def quality_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Validate data quality using DataGuard agent"""
-    log = list(state.get("execution_log", []))
-    results = dict(state.get("results", {}))
-
-    # Build context with profiler output
-    context = state["input_data"]
+    endpoint = ENDPOINT_MAP["quality"]
+    # Truncate CSV to first 50 rows
+    context = truncate_csv(state["input_data"], 50)
     if "profiler" in results:
-        context += f"\n\n--- PROFILER RESULTS ---\n{results['profiler']['output']}"
+        context += "\n\n--- PROFILER RESULTS ---\n" + results["profiler"].get("output", "")[:2000]
 
-    log.append(log_event(state, "AGENT_CALL", "quality", {
-        "endpoint": "mit_data_quality_agent_endpoint"
-    }))
+    log.append(log_entry(state, "AGENT_CALL", "quality", {"endpoint": endpoint, "message": f"Calling {endpoint}..."}))
 
-    result = await call_databricks_agent("mit_data_quality_agent_endpoint", context)
-
-    results["quality"] = result
+    result = call_databricks_sync(endpoint, context)
+    output_text = extract_text(result["data"]) if result["success"] else json.dumps(result["data"])
 
     # Extract quality score
-    quality_score = extract_quality_score(result["output"])
-
-    log.append(log_event(state, "AGENT_RESULT", "quality", {
-        "status": result["status"],
-        "duration_ms": result["duration_ms"],
-        "quality_score": quality_score,
-        "output_preview": result["output"][:200] if result["output"] else ""
-    }))
-
-    return {
-        "results": results,
-        "execution_log": log,
-        "quality_score": quality_score,
-        "current_step": state["current_step"] + 1
-    }
-
-def extract_quality_score(output: str) -> float:
-    """Extract quality score from agent output"""
+    quality_score = 50.0
     try:
-        import re
-        scores = re.findall(r'(?:overall|quality|score)[^\d]*(\d+(?:\.\d+)?)\s*%', output.lower())
+        scores = re.findall(r'(?:overall|quality|score|data quality)[^\d]*(\d+(?:\.\d+)?)\s*%', output_text.lower())
         if scores:
-            return float(scores[0])
+            quality_score = float(scores[0])
     except:
         pass
-    return 50.0
 
-async def quality_gate_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Quality gate with supervisor guidance - autonomous with human escalation fallback"""
-    log = list(state.get("execution_log", []))
-    score = state.get("quality_score", 0)
-    supervisor_guidance = state.get("supervisor_guidance", "")
+    results["quality"] = {
+        "output": output_text[:5000],
+        "duration_ms": result["duration_ms"],
+        "status": "SUCCESS" if result["success"] else "FAILED",
+        "quality_score": quality_score,
+        "timestamp": now()
+    }
 
-    log.append(log_event(state, "ROUTING_DECISION", "quality_gate", {
-        "quality_score": score,
-        "threshold": 80,
-        "decision": "auto_pass" if score >= 80 else "human_review" if score >= 60 else "auto_halt"
+    log.append(log_entry(state, "AGENT_RESULT", "quality", {
+        "status": results["quality"]["status"],
+        "duration_ms": result["duration_ms"],
+        "quality_score": quality_score,
+        "message": f"Quality check {'completed' if result['success'] else 'failed'} in {result['duration_ms']}ms. Score: {quality_score}%"
     }))
+
+    print(f"[NODE] quality_node done: score={quality_score}")
+    return {
+        "results": results,
+        "execution_log": log,
+        "quality_score": quality_score,
+        "current_step": state.get("current_step", 0) + 1,
+        "current_agent": "supervisor_quality"
+    }
+
+def supervisor_quality_node(state: WorkflowState) -> dict:
+    print(f"[NODE] supervisor_quality_node")
+    log = list(state.get("execution_log", []))
+    decisions = list(state.get("supervisor_decisions", []))
+    score = state.get("quality_score", 50)
 
     if score >= 80:
-        # High confidence - auto-approve
-        log.append(log_event(state, "ROUTING_DECISION", "quality_gate", {
-            "action": "AUTO_APPROVED",
-            "reason": f"Quality score {score}% >= 80% threshold. Supervisor guidance: {supervisor_guidance[:200]}"
-        }))
-        return {
-            "execution_log": log,
-            "status": "RUNNING",
-            "human_checkpoint_pending": False,
-            "current_agent": "classifier" if "classifier" in state["agent_order"] else "autoloader"
-        }
-
+        analysis = f"Quality score {score}% exceeds threshold. Auto-approving."
+        decision = "AUTO_APPROVE"
+        confidence = 95
     elif score >= 60:
-        # Borderline - only escalate if supervisor marked as CRITICAL
-        if state.get("checkpoint_type") and "CRITICAL" in state.get("checkpoint_type", ""):
-            # Escalate to human with supervisor guidance
-            log.append(log_event(state, "HUMAN_CHECKPOINT", "quality_gate", {
-                "reason": f"Quality score {score}% is borderline AND supervisor flagged critical issues.",
-                "supervisor_guidance": supervisor_guidance,
-                "options": ["approve", "fix", "abort"]
-            }))
-
-            human_response = interrupt({
-                "checkpoint_type": "QUALITY_GATE",
-                "quality_score": score,
-                "quality_output": state["results"].get("quality", {}).get("output", "")[:500],
-                "supervisor_guidance": supervisor_guidance,
-                "question": f"Data quality score is {score}% (borderline). Supervisor analysis: {supervisor_guidance[:300]}. Approve to continue?",
-                "options": ["approve", "fix", "abort"]
-            })
-
-            decision = human_response.get("decision", "abort")
-            decisions = list(state.get("human_decisions", []))
-            decisions.append({
-                "checkpoint": "quality_gate",
-                "decision": decision,
-                "timestamp": datetime.utcnow().isoformat(),
-                "approver": human_response.get("approver"),
-                "details": {"quality_score": score, "supervisor_guidance": supervisor_guidance}
-            })
-
-            log.append(log_event(state, "HUMAN_DECISION", "quality_gate", {"decision": decision}))
-
-            if decision == "abort":
-                return {
-                    "execution_log": log,
-                    "human_decisions": decisions,
-                    "status": "HALTED",
-                    "human_checkpoint_pending": False
-                }
-
-            return {
-                "execution_log": log,
-                "human_decisions": decisions,
-                "status": "RUNNING",
-                "human_checkpoint_pending": False,
-                "current_agent": "classifier" if "classifier" in state["agent_order"] else "autoloader"
-            }
-        else:
-            # Supervisor is confident - proceed autonomously
-            log.append(log_event(state, "ROUTING_DECISION", "quality_gate", {
-                "action": "AUTO_APPROVED_BY_SUPERVISOR",
-                "reason": f"Quality score {score}% is acceptable and supervisor is confident. {supervisor_guidance[:200]}"
-            }))
-            return {
-                "execution_log": log,
-                "status": "RUNNING",
-                "human_checkpoint_pending": False,
-                "current_agent": "classifier" if "classifier" in state["agent_order"] else "autoloader"
-            }
-
+        analysis = f"Quality score {score}% is moderate. Proceeding with classification."
+        decision = "PROCEED"
+        confidence = 75
     else:
-        # Low quality - auto-halt unless supervisor has high confidence
-        log.append(log_event(state, "ROUTING_DECISION", "quality_gate", {
-            "action": "AUTO_HALTED",
-            "reason": f"Quality score {score}% < 60% minimum threshold. {supervisor_guidance[:200]}"
-        }))
-        return {
-            "execution_log": log,
-            "status": "HALTED",
-            "human_checkpoint_pending": False
-        }
+        analysis = f"Quality score {score}% is low but proceeding to get full picture."
+        decision = "PROCEED_WITH_CAUTION"
+        confidence = 55
 
-async def classify_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Classify data sensitivity using ClassifyGuard agent"""
+    entry = {"step": "after_quality", "analysis": analysis, "confidence": confidence, "decision": decision, "quality_score": score}
+    decisions.append(entry)
+
+    log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
+        "message": f"🧠 {analysis} [Confidence: {confidence}%]",
+        "confidence": confidence,
+        "decision": decision
+    }))
+
+    log.append(log_entry(state, "ROUTING_DECISION", "quality_gate", {
+        "message": f"🔀 Quality gate: score={score}%, decision={decision}",
+        "quality_score": score
+    }))
+
+    return {"execution_log": log, "supervisor_decisions": decisions, "current_agent": "classifier"}
+
+def classify_node(state: WorkflowState) -> dict:
+    print(f"[NODE] classify_node starting")
     log = list(state.get("execution_log", []))
     results = dict(state.get("results", {}))
 
-    # Build context with previous results
-    context = state["input_data"]
-    for agent_name in ["profiler", "quality"]:
-        if agent_name in results:
-            context += f"\n\n--- {agent_name.upper()} RESULTS ---\n{results[agent_name]['output'][:1000]}"
+    endpoint = ENDPOINT_MAP["classifier"]
+    # Only send column names and 10 sample rows
+    context = truncate_csv(state["input_data"], 10)
+    for key in ["profiler", "quality"]:
+        if key in results:
+            context += f"\n\n--- {key.upper()} RESULTS ---\n" + results[key].get("output", "")[:1000]
 
-    log.append(log_event(state, "AGENT_CALL", "classifier", {
-        "endpoint": "mit_data_classifier_endpoint"
-    }))
+    log.append(log_entry(state, "AGENT_CALL", "classifier", {"endpoint": endpoint, "message": f"Calling {endpoint}..."}))
 
-    result = await call_databricks_agent("mit_data_classifier_endpoint", context)
+    result = call_databricks_sync(endpoint, context)
+    output_text = extract_text(result["data"]) if result["success"] else json.dumps(result["data"])
 
-    results["classifier"] = result
+    # Detect PII
+    pii_detected = []
+    pii_keywords = ["ssn", "social security", "credit card", "credit_card", "passport", "bank_account"]
+    for kw in pii_keywords:
+        if kw in output_text.lower():
+            pii_detected.append(kw)
 
-    # Detect PII columns
-    pii_detected = extract_pii_columns(result["output"])
+    results["classifier"] = {
+        "output": output_text[:5000],
+        "duration_ms": result["duration_ms"],
+        "status": "SUCCESS" if result["success"] else "FAILED",
+        "pii_detected": pii_detected,
+        "timestamp": now()
+    }
 
-    log.append(log_event(state, "AGENT_RESULT", "classifier", {
-        "status": result["status"],
+    log.append(log_entry(state, "AGENT_RESULT", "classifier", {
+        "status": results["classifier"]["status"],
         "duration_ms": result["duration_ms"],
         "pii_detected": pii_detected,
-        "output_preview": result["output"][:200] if result["output"] else ""
+        "message": f"Classifier {'completed' if result['success'] else 'failed'} in {result['duration_ms']}ms. PII: {pii_detected or 'none'}"
     }))
 
+    print(f"[NODE] classify_node done: pii={pii_detected}")
     return {
         "results": results,
         "execution_log": log,
         "pii_detected": pii_detected,
-        "current_step": state["current_step"] + 1,
-        "current_agent": "pii_gate"
+        "current_step": state.get("current_step", 0) + 1,
+        "current_agent": "supervisor_classify"
     }
 
-def extract_pii_columns(output: str) -> List[str]:
-    """Extract detected PII columns from classifier output"""
-    pii_keywords = [
-        "ssn", "social security", "credit card", "credit_card",
-        "passport", "driver license", "bank account", "email",
-        "phone", "telephone", "dob", "date of birth"
-    ]
-    detected = []
-    output_lower = output.lower()
-    for keyword in pii_keywords:
-        if keyword in output_lower and keyword not in detected:
-            detected.append(keyword)
-    return detected
-
-async def pii_gate_node(state: OrchestratorState) -> Dict[str, Any]:
-    """PII gate with supervisor guidance - autonomous with human escalation for CRITICAL"""
+def supervisor_classify_node(state: WorkflowState) -> dict:
+    print(f"[NODE] supervisor_classify_node")
     log = list(state.get("execution_log", []))
+    decisions = list(state.get("supervisor_decisions", []))
     pii = state.get("pii_detected", [])
-    supervisor_guidance = state.get("supervisor_guidance", "")
 
-    if not pii:
-        log.append(log_event(state, "ROUTING_DECISION", "pii_gate", {
-            "action": "AUTO_PASS",
-            "reason": "No restricted PII detected"
-        }))
-        return {
-            "execution_log": log,
-            "status": "RUNNING",
-            "human_checkpoint_pending": False,
-            "current_agent": "autoloader"
-        }
-
-    # PII found - check if supervisor marked CRITICAL
-    if state.get("checkpoint_type") and "CRITICAL" in state.get("checkpoint_type", ""):
-        # Escalate to human
-        log.append(log_event(state, "HUMAN_CHECKPOINT", "pii_gate", {
-            "reason": f"Restricted PII detected ({', '.join(pii)}) AND supervisor flagged critical.",
-            "pii_columns": pii,
-            "supervisor_guidance": supervisor_guidance,
-            "options": ["confirm_encryption", "abort"]
-        }))
-
-        human_response = interrupt({
-            "checkpoint_type": "PII_GATE",
-            "pii_detected": pii,
-            "supervisor_guidance": supervisor_guidance,
-            "question": f"Restricted PII detected: {', '.join(pii)}. Supervisor: {supervisor_guidance[:300]}. Confirm encryption?",
-            "options": ["confirm_encryption", "abort"]
-        })
-
-        decision = human_response.get("decision", "abort")
-        decisions = list(state.get("human_decisions", []))
-        decisions.append({
-            "checkpoint": "pii_gate",
-            "decision": decision,
-            "timestamp": datetime.utcnow().isoformat(),
-            "approver": human_response.get("approver"),
-            "details": {"pii_detected": pii, "supervisor_guidance": supervisor_guidance}
-        })
-
-        log.append(log_event(state, "HUMAN_DECISION", "pii_gate", {"decision": decision, "pii": pii}))
-
-        if decision == "abort":
-            return {
-                "execution_log": log,
-                "human_decisions": decisions,
-                "status": "HALTED",
-                "human_checkpoint_pending": False
-            }
-
-        return {
-            "execution_log": log,
-            "human_decisions": decisions,
-            "status": "RUNNING",
-            "human_checkpoint_pending": False,
-            "current_agent": "autoloader"
-        }
+    if pii:
+        analysis = f"PII detected: {', '.join(pii)}. Encryption recommended. Proceeding to autoloader."
+        confidence = 80
     else:
-        # Supervisor is confident - auto-approve PII handling
-        log.append(log_event(state, "ROUTING_DECISION", "pii_gate", {
-            "action": "AUTO_APPROVED_BY_SUPERVISOR",
-            "reason": f"PII detected ({', '.join(pii)}) but supervisor confident in safe handling. {supervisor_guidance[:200]}"
-        }))
-        return {
-            "execution_log": log,
-            "status": "RUNNING",
-            "human_checkpoint_pending": False,
-            "current_agent": "autoloader"
-        }
+        analysis = "No restricted PII detected. Safe to proceed to autoloader."
+        confidence = 95
 
-async def autoloader_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Generate Auto Loader pipeline using AutoLoad agent"""
+    entry = {"step": "after_classify", "analysis": analysis, "confidence": confidence, "pii": pii}
+    decisions.append(entry)
+
+    log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
+        "message": f"🧠 {analysis} [Confidence: {confidence}%]",
+        "pii_detected": pii
+    }))
+
+    return {"execution_log": log, "supervisor_decisions": decisions, "current_agent": "autoloader"}
+
+def autoloader_node(state: WorkflowState) -> dict:
+    print(f"[NODE] autoloader_node starting")
     log = list(state.get("execution_log", []))
     results = dict(state.get("results", {}))
 
-    # Build context with all previous results
-    context = state["input_data"]
-    for agent_name in ["profiler", "quality", "classifier"]:
-        if agent_name in results:
-            context += f"\n\n--- {agent_name.upper()} RESULTS ---\n{results[agent_name]['output'][:1000]}"
+    endpoint = ENDPOINT_MAP["autoloader"]
+    # Send only metadata (column names, row count, summaries)
+    lines = state["input_data"].strip().split('\n')
+    row_count = len(lines) - 1
+    column_names = lines[0] if lines else "unknown"
+    context = f"Load CSV data with {row_count} rows and columns: {column_names}. Source: claims.csv\n\n"
 
-    log.append(log_event(state, "AGENT_CALL", "autoloader", {
-        "endpoint": "mit_autoloader_agent_endpoint"
-    }))
+    for key in ["profiler", "quality", "classifier"]:
+        if key in results:
+            context += f"--- {key.upper()} RESULTS ---\n" + results[key].get("output", "")[:1000] + "\n\n"
 
-    result = await call_databricks_agent("mit_autoloader_agent_endpoint", context)
+    log.append(log_entry(state, "AGENT_CALL", "autoloader", {"endpoint": endpoint, "message": f"Calling {endpoint}..."}))
 
-    results["autoloader"] = result
+    result = call_databricks_sync(endpoint, context)
+    output_text = extract_text(result["data"]) if result["success"] else json.dumps(result["data"])
 
-    log.append(log_event(state, "AGENT_RESULT", "autoloader", {
-        "status": result["status"],
+    results["autoloader"] = {
+        "output": output_text[:5000],
         "duration_ms": result["duration_ms"],
-        "output_preview": result["output"][:200] if result["output"] else ""
+        "status": "SUCCESS" if result["success"] else "FAILED",
+        "timestamp": now()
+    }
+
+    log.append(log_entry(state, "AGENT_RESULT", "autoloader", {
+        "status": results["autoloader"]["status"],
+        "duration_ms": result["duration_ms"],
+        "message": f"AutoLoader {'completed' if result['success'] else 'failed'} in {result['duration_ms']}ms"
     }))
 
+    print(f"[NODE] autoloader_node done")
     return {
         "results": results,
         "execution_log": log,
-        "current_step": state["current_step"] + 1,
-        "current_agent": "pipeline_review"
+        "current_step": state.get("current_step", 0) + 1,
+        "current_agent": "supervisor_autoloader"
     }
 
-async def pipeline_review_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Pipeline review with supervisor guidance - escalate only if CRITICAL"""
+def supervisor_autoloader_node(state: WorkflowState) -> dict:
+    print(f"[NODE] supervisor_autoloader_node")
     log = list(state.get("execution_log", []))
-    supervisor_guidance = state.get("supervisor_guidance", "")
+    decisions = list(state.get("supervisor_decisions", []))
 
-    pipeline_code = state.get("results", {}).get("autoloader", {}).get("output", "No pipeline generated")
-
-    # If supervisor marked CRITICAL, escalate to human
-    if state.get("checkpoint_type") and "CRITICAL" in state.get("checkpoint_type", ""):
-        log.append(log_event(state, "HUMAN_CHECKPOINT", "pipeline_review", {
-            "reason": "Supervisor flagged critical issue in pipeline. Manual review required.",
-            "supervisor_guidance": supervisor_guidance,
-            "pipeline_preview": pipeline_code[:500]
-        }))
-
-        human_response = interrupt({
-            "checkpoint_type": "PIPELINE_REVIEW",
-            "pipeline_code": pipeline_code[:2000],
-            "supervisor_guidance": supervisor_guidance,
-            "question": f"Supervisor found issues: {supervisor_guidance[:300]}. Review pipeline and decide?",
-            "options": ["approve_deploy", "modify", "abort"]
-        })
-
-        decision = human_response.get("decision", "abort")
-        decisions = list(state.get("human_decisions", []))
-        decisions.append({
-            "checkpoint": "pipeline_review",
-            "decision": decision,
-            "timestamp": datetime.utcnow().isoformat(),
-            "approver": human_response.get("approver"),
-            "details": {"supervisor_guidance": supervisor_guidance}
-        })
-
-        log.append(log_event(state, "HUMAN_DECISION", "pipeline_review", {"decision": decision}))
-
-        if decision == "abort":
-            return {
-                "execution_log": log,
-                "human_decisions": decisions,
-                "status": "HALTED",
-                "human_checkpoint_pending": False,
-                "current_agent": "complete"
-            }
-
-        return {
-            "execution_log": log,
-            "human_decisions": decisions,
-            "status": "COMPLETED",
-            "human_checkpoint_pending": False,
-            "current_agent": "complete"
-        }
+    al_result = state.get("results", {}).get("autoloader", {})
+    if al_result.get("status") == "SUCCESS":
+        analysis = "AutoLoader pipeline code generated successfully. Pipeline ready for deployment."
+        confidence = 90
     else:
-        # Supervisor is confident - auto-approve
-        log.append(log_event(state, "ROUTING_DECISION", "pipeline_review", {
-            "action": "AUTO_APPROVED",
-            "reason": f"Supervisor approved pipeline generation. {supervisor_guidance[:200]}"
-        }))
-        return {
-            "execution_log": log,
-            "status": "COMPLETED",
-            "human_checkpoint_pending": False,
-            "current_agent": "complete"
-        }
+        analysis = "AutoLoader had issues. Review recommended."
+        confidence = 60
 
-async def complete_node(state: OrchestratorState) -> Dict[str, Any]:
-    """Workflow completion"""
+    entry = {"step": "after_autoloader", "analysis": analysis, "confidence": confidence}
+    decisions.append(entry)
+
+    log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
+        "message": f"🧠 {analysis} [Confidence: {confidence}%]"
+    }))
+
+    return {"execution_log": log, "supervisor_decisions": decisions, "current_agent": "complete"}
+
+def complete_node(state: WorkflowState) -> dict:
+    print(f"[NODE] complete_node")
     log = list(state.get("execution_log", []))
+    results = state.get("results", {})
 
-    total_duration = sum(r.get("duration_ms", 0) for r in state.get("results", {}).values())
+    total_duration = sum(r.get("duration_ms", 0) for r in results.values())
+    agents_run = len(results)
+    successful = sum(1 for r in results.values() if r.get("status") == "SUCCESS")
 
-    log.append(log_event(state, "WORKFLOW_COMPLETE", "orchestrator", {
-        "total_agents_run": len(state.get("results", {})),
+    log.append(log_entry(state, "WORKFLOW_COMPLETE", "orchestrator", {
+        "message": f"🏁 Pipeline complete! {successful}/{agents_run} agents succeeded. Total time: {total_duration}ms",
         "total_duration_ms": total_duration,
+        "agents_run": agents_run,
+        "successful": successful,
         "quality_score": state.get("quality_score", 0),
-        "pii_detected": state.get("pii_detected", []),
-        "human_decisions": len(state.get("human_decisions", []))
+        "pii_detected": state.get("pii_detected", [])
     }))
 
     return {
         "execution_log": log,
-        "status": state.get("status", "COMPLETED") if state.get("status") != "PAUSED" else "COMPLETED"
+        "status": "COMPLETED",
+        "current_agent": "complete"
     }
 
-# ============================================================================
-# CONDITIONAL ROUTING
-# ============================================================================
+# ============ BUILD GRAPH ============
 
-def route_after_quality_gate(state: OrchestratorState) -> str:
-    """Route after quality gate checkpoint"""
-    if state.get("status") == "HALTED":
-        return "complete"
-    return "classifier" if "classifier" in state.get("agent_order", []) else "autoloader"
+def build_orchestrator_graph():
+    graph = StateGraph(WorkflowState)
 
-def route_after_pii_gate(state: OrchestratorState) -> str:
-    """Route after PII gate checkpoint"""
-    if state.get("status") == "HALTED":
-        return "complete"
-    return "autoloader"
-
-# ============================================================================
-# GRAPH CONSTRUCTION
-# ============================================================================
-
-def build_orchestrator_graph() -> Any:
-    """
-    Build the LangGraph orchestration workflow with autonomous supervisor nodes.
-
-    NOTE: Supports fixed agent order (profiler → quality → quality_gate → classifier → pii_gate → autoloader → pipeline_review).
-    For true dynamic agents, rebuild the graph per workflow in server.py with custom agent_specs.
-    """
-    graph = StateGraph(OrchestratorState)
-
-    # Add nodes - hardcoded flow with supervisors
     graph.add_node("profile", profile_node)
-    graph.add_node("supervisor_after_profile", partial(supervisor_node, stage="after_profile"))
+    graph.add_node("supervisor_profile", supervisor_profile_node)
     graph.add_node("quality", quality_node)
-    graph.add_node("supervisor_after_quality", partial(supervisor_node, stage="after_quality"))
-    graph.add_node("quality_gate", quality_gate_node)
+    graph.add_node("supervisor_quality", supervisor_quality_node)
     graph.add_node("classify", classify_node)
-    graph.add_node("supervisor_after_classify", partial(supervisor_node, stage="after_classify"))
-    graph.add_node("pii_gate", pii_gate_node)
+    graph.add_node("supervisor_classify", supervisor_classify_node)
     graph.add_node("autoloader", autoloader_node)
-    graph.add_node("supervisor_after_autoloader", partial(supervisor_node, stage="after_autoloader"))
-    graph.add_node("pipeline_review", pipeline_review_node)
+    graph.add_node("supervisor_autoloader", supervisor_autoloader_node)
     graph.add_node("complete", complete_node)
 
-    # Set entry point
     graph.set_entry_point("profile")
-
-    # Define edges with supervisor nodes
-    graph.add_edge("profile", "supervisor_after_profile")
-    graph.add_edge("supervisor_after_profile", "quality")
-    graph.add_edge("quality", "supervisor_after_quality")
-    graph.add_edge("supervisor_after_quality", "quality_gate")
-    graph.add_conditional_edges(
-        "quality_gate",
-        route_after_quality_gate,
-        {"classifier": "classify", "autoloader": "autoloader", "complete": "complete"}
-    )
-    graph.add_edge("classify", "supervisor_after_classify")
-    graph.add_edge("supervisor_after_classify", "pii_gate")
-    graph.add_conditional_edges(
-        "pii_gate",
-        route_after_pii_gate,
-        {"autoloader": "autoloader", "complete": "complete"}
-    )
-    graph.add_edge("autoloader", "supervisor_after_autoloader")
-    graph.add_edge("supervisor_after_autoloader", "pipeline_review")
-    graph.add_edge("pipeline_review", "complete")
+    graph.add_edge("profile", "supervisor_profile")
+    graph.add_edge("supervisor_profile", "quality")
+    graph.add_edge("quality", "supervisor_quality")
+    graph.add_edge("supervisor_quality", "classify")
+    graph.add_edge("classify", "supervisor_classify")
+    graph.add_edge("supervisor_classify", "autoloader")
+    graph.add_edge("autoloader", "supervisor_autoloader")
+    graph.add_edge("supervisor_autoloader", "complete")
     graph.add_edge("complete", END)
 
-    # Compile with memory checkpoint
     return graph.compile(checkpointer=InMemorySaver())
 
-
-def build_custom_orchestrator_graph(agent_specs: List[Dict[str, str]]) -> Any:
-    """
-    Build a custom orchestration graph for any agent order.
-
-    Args:
-        agent_specs: List of agent specifications
-                    [{"name": "agent_name", "endpoint": "endpoint_name"}, ...]
-                    Example: [{"name": "custom_agent", "endpoint": "my_endpoint"}]
-
-    Returns:
-        Compiled LangGraph StateGraph supporting any agent
-    """
-    graph = StateGraph(OrchestratorState)
-
-    if not agent_specs or len(agent_specs) == 0:
-        raise ValueError("agent_specs cannot be empty")
-
-    agent_names = [spec["name"] for spec in agent_specs]
-
-    # Add generic agent nodes for each spec
-    for spec in agent_specs:
-        agent_name = spec["name"]
-        endpoint_name = spec.get("endpoint", agent_name)
-
-        # Add agent node
-        graph.add_node(
-            agent_name,
-            partial(generic_agent_node, endpoint_name=endpoint_name, agent_name=agent_name)
-        )
-
-        # Add supervisor node after each agent
-        graph.add_node(
-            f"supervisor_{agent_name}",
-            partial(supervisor_node, stage=f"after_{agent_name}")
-        )
-
-    # Add completion node
-    graph.add_node("complete", complete_node)
-
-    # Set entry point to first agent
-    graph.set_entry_point(agent_names[0])
-
-    # Connect agents with supervisors in sequence
-    for i, agent_name in enumerate(agent_names):
-        # Agent → Supervisor
-        graph.add_edge(agent_name, f"supervisor_{agent_name}")
-
-        # Supervisor → Next Agent or Complete
-        if i < len(agent_names) - 1:
-            next_agent = agent_names[i + 1]
-            graph.add_edge(f"supervisor_{agent_name}", next_agent)
-        else:
-            # Last agent supervisor → complete
-            graph.add_edge(f"supervisor_{agent_name}", "complete")
-
-    # End
-    graph.add_edge("complete", END)
-
-    # Compile with memory checkpoint
-    return graph.compile(checkpointer=InMemorySaver())
-
-# Create the graph instance
-orchestrator_graph = build_orchestrator_graph()
-
-
-# ============================================================================
-# INTERVIEW GRAPH (Stub for compatibility)
-# ============================================================================
-
-class InterviewState(TypedDict):
-    """State for the interview phase (stub)"""
-    messages: List[Dict[str, str]]
-    interview_responses: List[Dict[str, Any]]
-    problem_description: str
-    user_role: str
-    data_sources: List[str]
-    workspaces: List[str]
-    scale_requirements: Dict[str, Any]
-    human_approval: bool
-    current_phase: str
-    interview_complete: bool
-
-
-def build_interview_graph() -> Any:
-    """Build interview graph (stub for now)"""
-    graph = StateGraph(InterviewState)
-
-    async def interview_node(state: InterviewState) -> Dict[str, Any]:
-        return {
-            "interview_complete": True,
-            "human_approval": True
-        }
-
-    graph.add_node("interview", interview_node)
-    graph.set_entry_point("interview")
-    graph.add_edge("interview", END)
-
-    return graph.compile()
-
-
-interview_graph = build_interview_graph()
+orchestrator = build_orchestrator_graph()

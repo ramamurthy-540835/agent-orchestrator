@@ -305,6 +305,108 @@ details[open] > summary .last-run-chevron {
     background: var(--gray-400);
 }
 
+/* ═══════════════════════════════════════════
+   ADF-STYLE WORKFLOW DESIGNER
+   ═════════════════════════════════════════ */
+
+.adf-agent-item {
+    transition: all 0.2s !important;
+}
+
+.adf-agent-item:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.adf-agent-item:active {
+    cursor: grabbing;
+}
+
+.canvas-agent-card {
+    transition: all 0.2s !important;
+}
+
+.canvas-agent-card:hover {
+    transform: scale(1.02);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15) !important;
+}
+
+.canvas-agent-card:active {
+    cursor: grabbing;
+}
+
+#workflowCanvas {
+    transition: background 0.3s ease;
+}
+
+#deleteZone {
+    transition: background 0.3s ease;
+}
+
+#deleteZone:hover {
+    background: #fed7d7 !important;
+}
+
+/* Drag and Drop Styling */
+.pipeline-step {
+    cursor: grab;
+    transition: all 0.2s;
+    position: relative;
+}
+
+.pipeline-step:active {
+    cursor: grabbing;
+}
+
+.pipeline-step.dragging {
+    opacity: 0.4;
+    border: 2px dashed #3B82F6 !important;
+    transform: scale(0.95);
+}
+
+.pipeline-step.drag-over {
+    border-left: 4px solid #3B82F6 !important;
+}
+
+.drag-handle {
+    cursor: grab;
+    color: #9CA3AF;
+    font-size: 20px;
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 10;
+    transition: color 0.2s;
+}
+
+.drag-handle:hover {
+    color: #6B7280;
+}
+
+.delete-step-btn {
+    cursor: pointer;
+    color: #EF4444;
+    font-size: 14px;
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: white;
+    border: 1px solid #EF4444;
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    z-index: 10;
+    transition: all 0.2s;
+}
+
+.delete-step-btn:hover {
+    background: #FEE2E2;
+}
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
     .workflow-pipeline {

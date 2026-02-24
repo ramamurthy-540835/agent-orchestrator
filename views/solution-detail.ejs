@@ -38,10 +38,25 @@
             <button class="btn-blue" style="padding: 8px 20px; border: none; cursor: pointer;" onclick="openAddStepModal()">+ Add First Agent</button>
         </div>
         <% } %>
-    </div>
 
-    <!-- Visual Workflow -->
-    <div id="workflowPipeline" class="workflow-pipeline" style="<%= solution.steps.length === 0 ? 'display:none;' : '' %>">
+        <!-- Left Sidebar + Pipeline Container -->
+        <div style="display: flex; gap: 20px; align-items: flex-start;">
+            <!-- LEFT: Available Agents Panel -->
+            <div style="width: 220px; max-height: 400px; overflow-y: auto; border: 1px solid #E5E7EB; border-radius: 8px; padding: 12px; background: #F9FAFB; flex-shrink: 0;">
+                <h4 style="margin: 0 0 8px; font-size: 13px; font-weight: 600; color: #374151;">AVAILABLE AGENTS</h4>
+                <div id="available-agents-list" style="font-size: 12px;">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <!-- RIGHT: Pipeline -->
+            <div style="flex: 1;">
+                <!-- Drag Hint -->
+                <% if (solution.steps.length > 0) { %>
+                <div style="font-size: 11px; color: #9CA3AF; margin-bottom: 8px; padding: 6px 8px; border-bottom: 1px solid #E5E7EB;">☰ Drag cards to reorder workflow</div>
+                <% } %>
+                <!-- Visual Workflow -->
+                <div id="workflowPipeline" class="workflow-pipeline" style="<%= solution.steps.length === 0 ? 'display:none;' : '' %>">
         <!-- Start Node -->
         <div class="workflow-node workflow-start">
             <div class="workflow-node-icon">&#x25B6;</div>
@@ -53,9 +68,12 @@
             <div class="connector-line"></div>
             <div class="connector-arrow">&#9654;</div>
         </div>
-        <div class="workflow-node workflow-agent" data-step-id="<%= step.id %>" draggable="true">
+        <div class="workflow-node workflow-agent" data-step-id="<%= step.id %>" data-index="<%= idx %>" draggable="true" style="position:relative;">
             <div class="workflow-node-header">
-                <span class="workflow-step-num"><%= idx + 1 %></span>
+                <div style="display:flex;gap:4px;align-items:center;">
+                    <span class="drag-handle" style="cursor:grab;color:#9CA3AF;font-size:16px;padding:4px;margin-left:-4px;">☰</span>
+                    <span class="workflow-step-num"><%= idx + 1 %></span>
+                </div>
                 <div class="workflow-node-actions">
                     <button class="wf-btn" title="Edit" onclick="editStep('<%= step.id %>')">&#9998;</button>
                     <button class="wf-btn wf-btn-danger" title="Remove" onclick="removeStep('<%= step.id %>')">&#10005;</button>
@@ -78,15 +96,46 @@
             <div class="workflow-node-label">Output</div>
         </div>
         <% } %>
+                </div>
+            </div>
+        </div>
     </div>
-</div>
 
 <!-- LangGraph Orchestrator Visualization (Top Layer) -->
 <div class="clean-section" style="margin-top: 15px;">
     <h3>LangGraph Orchestrator Structure</h3>
     <p style="font-size: 0.85rem; color: var(--gray-600); margin-bottom: 12px;">Autonomous supervisor-guided execution flow with intelligent decision-making</p>
-    <div id="graphVisualization" style="background: #f9fafb; border: 1px solid var(--border-light); border-radius: 8px; padding: 16px; min-height: 200px; font-family: monospace; font-size: 0.85rem; overflow-x: auto;">
-        <pre id="graphAscii" style="margin: 0; color: var(--gray-700);">Loading graph structure...</pre>
+    <div style="padding:20px;background:#f8fafc;border-radius:12px;overflow-x:auto;">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center;">
+            <div style="background:#10B981;color:white;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;">▶ START</div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;"><b>🤖 Profile</b><br><span style="font-size:9px;opacity:.8">DataScout</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">analyze</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;"><b>🤖 Quality</b><br><span style="font-size:9px;opacity:.8">DataGuard</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">score check</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#F59E0B;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;border:2px dashed #D97706;"><b>⚠️ Quality Gate</b><br><span style="font-size:8px;">≥80% auto | &lt;60% halt</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;"><b>🤖 Classify</b><br><span style="font-size:9px;opacity:.8">PII Guard</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">PII check</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#F59E0B;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;border:2px dashed #D97706;"><b>⚠️ PII Gate</b><br><span style="font-size:8px;">human confirm</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;"><b>🤖 AutoLoad</b><br><span style="font-size:9px;opacity:.8">Pipeline Gen</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">code review</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#F59E0B;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;border:2px dashed #D97706;"><b>⚠️ Review</b><br><span style="font-size:8px;">approve code</span></div>
+            <span style="color:#9CA3AF;">→</span>
+            <div style="background:#10B981;color:white;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;">🏁 END</div>
+        </div>
+        <div style="display:flex;gap:16px;justify-content:center;margin-top:12px;font-size:10px;color:#6B7280;flex-wrap:wrap;">
+            <span>🔵 Agent</span><span>🟣 Supervisor</span><span>🟡 Human Gate</span><span>🟢 Start/End</span>
+        </div>
     </div>
 </div>
 
@@ -120,6 +169,14 @@
     </div>
     <div id="logTimeline" style="background: #f9fafb; border: 1px solid var(--border-light); border-radius: 8px; padding: 12px; max-height: 500px; overflow-y: auto;">
         <!-- Log entries rendered here -->
+    </div>
+</div>
+
+<!-- Pipeline Results Panel -->
+<div class="clean-section" id="pipelineResultsSection" style="display:none; margin-top: 15px;">
+    <h3>Pipeline Results</h3>
+    <div id="pipelineResultsBody" style="display: flex; flex-direction: column; gap: 8px;">
+        <!-- Agent result cards will be inserted here -->
     </div>
 </div>
 
@@ -163,7 +220,7 @@
     </div>
 </div>
 
-<% if (solution.lastRun) { %>
+<% if (solution.lastRun && solution.lastRun.results) { %>
 <div class="clean-section" style="margin-top: 15px;">
     <details>
         <summary style="cursor: pointer; display: flex; align-items: center; gap: 10px; list-style: none;">
@@ -246,9 +303,57 @@
 </div>
 
 <script>
+// Add CSS animations for execution flow
+const style = document.createElement('style');
+style.innerHTML = `
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+  70% { box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+}
+.node-running {
+  animation: pulse 1.5s infinite !important;
+  background: #3B82F6 !important;
+  color: white !important;
+  border-color: #3B82F6 !important;
+}
+.node-completed {
+  background: #10B981 !important;
+  color: white !important;
+  border-color: #10B981 !important;
+}
+.node-failed {
+  background: #EF4444 !important;
+  color: white !important;
+  border-color: #EF4444 !important;
+}
+.node-paused {
+  background: #F59E0B !important;
+  color: white !important;
+  border-color: #F59E0B !important;
+  animation: pulse 2s infinite !important;
+}
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #f3f3f3;
+  border-top: 2px solid var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 8px;
+}
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+`;
+document.head.appendChild(style);
+
 const SOLUTION_ID = '<%= solution.id %>';
 let editingStepId = null;
 let uploadedFileContent = null;
+let modalOpen = false; // Prevent multiple modals
 
 // File upload handling
 function handleFileUpload(input) {
@@ -443,40 +548,8 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
-// Drag and drop reordering
-let draggedEl = null;
-document.querySelectorAll('.workflow-agent').forEach(node => {
-    node.addEventListener('dragstart', (e) => {
-        draggedEl = node;
-        node.style.opacity = '0.4';
-    });
-    node.addEventListener('dragend', () => {
-        node.style.opacity = '1';
-        draggedEl = null;
-    });
-    node.addEventListener('dragover', (e) => { e.preventDefault(); });
-    node.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        if (!draggedEl || draggedEl === node) return;
-        const allNodes = [...document.querySelectorAll('.workflow-agent')];
-        const fromIdx = allNodes.indexOf(draggedEl);
-        const toIdx = allNodes.indexOf(node);
-        if (fromIdx < toIdx) {
-            node.parentNode.insertBefore(draggedEl.previousElementSibling, node.nextElementSibling);
-            node.parentNode.insertBefore(draggedEl, node.nextElementSibling);
-        } else {
-            node.parentNode.insertBefore(draggedEl, node);
-            node.parentNode.insertBefore(draggedEl.nextElementSibling || draggedEl, node);
-        }
-        const newOrder = [...document.querySelectorAll('.workflow-agent')].map(n => n.dataset.stepId);
-        await fetch('/api/solutions/' + SOLUTION_ID + '/reorder', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ stepIds: newOrder })
-        });
-        window.location.reload();
-    });
-});
+// Drag and drop reordering is now handled by initDragDrop() function below
+// Removed duplicate listeners here
 
 // ============================================================================
 // LANGGRAPH VISUALIZER + REAL-TIME EXECUTION ANIMATOR
@@ -507,128 +580,159 @@ const EVENT_EMOJI = {
 
 // Render LangGraph structure (ASCII diagram)
 function renderGraphStructure() {
-    const steps = document.querySelectorAll('[data-step-id]');
-    const stepNames = Array.from(steps).map(s => s.querySelector('.workflow-node-name').textContent);
-
-    const ascii = `
-  START
-    │
-    ├─→ [Profile Agent]
-    │   └─→ [Supervisor] (analyze log)
-    │       ↓
-    ├─→ [Quality Agent]
-    │   └─→ [Supervisor] (check quality, confidence)
-    │       ↓
-    ├─→ [Quality Gate] ← if score < 60: escalate to human
-    │   └─→ auto-approve (>80%) or auto-escalate (<60%)
-    │       ↓
-    ├─→ [Classify Agent] ${stepNames.includes('classifier') ? '✓' : '(if enabled)'}
-    │   └─→ [Supervisor] (check PII, anomalies)
-    │       ↓
-    ├─→ [PII Gate] ← if CRITICAL: escalate to human
-    │   └─→ auto-approve or escalate
-    │       ↓
-    ├─→ [AutoLoader Agent]
-    │   └─→ [Supervisor] (check generated code)
-    │       ↓
-    ├─→ [Pipeline Review] ← if CRITICAL: manual review
-    │   └─→ Approve/Modify/Abort
-    │       ↓
-    └─→ [Complete]
-        └─→ END
-
-  🧠 Supervisor Decision Flow:
-     If confidence >= 90%: AUTO-PROCEED
-     If 60% <= confidence < 90%: ESCALATE to human
-     If confidence < 60%: HALT
-    `;
-
-    document.getElementById('graphAscii').textContent = ascii;
+    // Graph structure is now static HTML with colored visualization
+    // No need to dynamically update it
+    console.log('[GRAPH] Graph structure is static');
 }
 
 // Real-time executor timeline animation
 function renderExecutionFlow(state) {
     const timeline = document.getElementById('executorTimeline');
+    if (!timeline) return;
+
     const nodeOrder = [
-        'profile', 'supervisor_after_profile',
-        'quality', 'supervisor_after_quality', 'quality_gate',
-        'classify', 'supervisor_after_classify', 'pii_gate',
-        'autoloader', 'supervisor_after_autoloader',
-        'pipeline_review', 'complete'
+        'profile', 'supervisor_profile',
+        'quality', 'supervisor_quality',
+        'classify', 'supervisor_classify',
+        'autoloader', 'supervisor_autoloader',
+        'complete'
     ];
+
+    // Determine which nodes are completed from the log
+    const completedAgents = new Set();
+    const failedAgents = new Set();
+    if (state.execution_log) {
+        state.execution_log.forEach(entry => {
+            if (entry.event_type === 'AGENT_RESULT') {
+                completedAgents.add(entry.agent);
+                if (entry.details?.status === 'FAILED') {
+                    failedAgents.add(entry.agent);
+                }
+            }
+            if (entry.event_type === 'SUPERVISOR_ANALYSIS') {
+                const supervisor_name = 'supervisor_' + entry.details?.step?.replace('after_', '');
+                if (supervisor_name !== 'supervisor_undefined') {
+                    completedAgents.add(supervisor_name);
+                }
+            }
+        });
+    }
 
     let html = '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px;">';
 
     nodeOrder.forEach(nodeName => {
         const isRunning = state.current_agent === nodeName;
-        const isCompleted = state.execution_log && state.execution_log.some(
-            e => e.agent === nodeName && (e.event_type === 'AGENT_RESULT' || e.event_type === 'ROUTING_DECISION')
-        );
-        const isFailed = state.execution_log && state.execution_log.some(
-            e => e.agent === nodeName && e.event_type === 'AGENT_RESULT' && e.details?.status === 'FAILED'
-        );
+        const isCompleted = completedAgents.has(nodeName) || (state.status === 'COMPLETED');
+        const isFailed = failedAgents.has(nodeName);
+        const isPaused = state.checkpoint_pending && nodeName === state.current_agent;
 
-        let bgColor = '#f3f4f6';  // default gray
-        let borderColor = '#d1d5db';
+        let className = '';
         let emoji = '⭕';
+        let bgColor = '#f3f4f6';
+        let borderColor = '#d1d5db';
 
-        if (isFailed) {
-            bgColor = '#fee2e2';
-            borderColor = '#ef4444';
-            emoji = '❌';
-        } else if (isRunning) {
-            bgColor = '#dbeafe';
-            borderColor = '#3b82f6';
-            emoji = '⚡';
-        } else if (isCompleted) {
-            bgColor = '#dcfce7';
-            borderColor = '#22c55e';
+        if (state.status === 'COMPLETED') {
+            className = 'node-completed';
             emoji = '✅';
+            bgColor = '#10B981';
+            borderColor = '#10B981';
+        } else if (isFailed) {
+            className = 'node-failed';
+            emoji = '❌';
+            bgColor = '#EF4444';
+            borderColor = '#EF4444';
+        } else if (isPaused) {
+            className = 'node-paused';
+            emoji = '⏸';
+            bgColor = '#F59E0B';
+            borderColor = '#F59E0B';
+        } else if (isRunning) {
+            className = 'node-running';
+            emoji = '⚡';
+            bgColor = '#3B82F6';
+            borderColor = '#3B82F6';
+        } else if (isCompleted) {
+            className = 'node-completed';
+            emoji = '✅';
+            bgColor = '#10B981';
+            borderColor = '#10B981';
         }
 
-        const displayName = nodeName.replace(/_/g, ' ').replace(/supervisor after/, 'Supervisor').replace(/gate/, 'Gate');
+        const displayName = nodeName
+            .replace(/_/g, ' ')
+            .replace(/supervisor /gi, 'Sup.')
+            .replace(/gate/gi, 'Gate');
 
         html += `
-        <div style="background: ${bgColor}; border: 2px solid ${borderColor}; border-radius: 8px; padding: 10px; text-align: center; font-size: 0.75rem; cursor: pointer;"
+        <div class="${className}" style="background: ${bgColor}; border: 2px solid ${borderColor}; border-radius: 8px; padding: 12px 8px; text-align: center; font-size: 0.75rem; cursor: pointer; color: white; font-weight: 600; transition: all 0.3s;"
              title="${nodeName}" onclick="highlightLogEntry('${nodeName}')">
-            <div style="font-size: 1.2rem; margin-bottom: 4px;">${emoji}</div>
-            <div style="font-weight: 600;">${displayName}</div>
+            <div style="font-size: 1.4rem; margin-bottom: 6px;">${emoji}</div>
+            <div style="word-break: break-word; line-height: 1.2;">${displayName}</div>
         </div>`;
     });
 
     html += '</div>';
     timeline.innerHTML = html;
+    console.log('[FLOW] Execution flow updated - completed: ' + Array.from(completedAgents).join(', '));
 }
 
 // Format log entry with color and emoji
 function formatLogEntry(entry) {
+    if (!entry || !entry.event_type) return '';
+
     const color = EVENT_COLORS[entry.event_type] || '#6b7280';
     const emoji = EVENT_EMOJI[entry.event_type] || '📝';
-    const timestamp = new Date(entry.timestamp).toLocaleTimeString();
-    const agentName = entry.agent || 'system';
+    const timestamp = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '--:--:--';
+    const agentName = entry.agent || entry.name || 'system';
 
     let detailsStr = '';
-    if (entry.details) {
-        if (entry.event_type === 'AGENT_RESULT') {
-            detailsStr = ` [${entry.details.status}] (${entry.details.duration_ms}ms)`;
-        } else if (entry.event_type === 'ROUTING_DECISION') {
-            detailsStr = ` ${entry.details.action || ''} ${entry.details.reason ? '(' + entry.details.reason.substring(0, 50) + '...)' : ''}`;
-        } else if (entry.event_type === 'SUPERVISOR_ANALYSIS') {
-            detailsStr = ` [${entry.details.decision?.decision}] confidence: ${entry.details.decision?.confidence}%`;
-        } else if (entry.details.quality_score !== undefined) {
-            detailsStr = ` (score: ${entry.details.quality_score}%)`;
-        }
+    const details = entry.details || {};
+
+    switch(entry.event_type) {
+        case 'AGENT_CALL':
+            detailsStr = ` Calling ${agentName}...`;
+            break;
+        case 'AGENT_RESULT':
+            if (details.status) detailsStr = ` [${details.status}]`;
+            if (details.duration_ms) detailsStr += ` (${details.duration_ms}ms)`;
+            break;
+        case 'AGENT_RESULT_FAILED':
+            if (details.error) detailsStr = ` Error: ${details.error.substring(0, 50)}...`;
+            break;
+        case 'ROUTING_DECISION':
+            if (details.action) detailsStr = ` Route: ${details.action}`;
+            if (details.reason) detailsStr += ` (${details.reason.substring(0, 40)})`;
+            break;
+        case 'SUPERVISOR_ANALYSIS':
+            if (details.decision) detailsStr = ` Decision: ${details.decision.decision || ''}`;
+            if (details.decision?.confidence) detailsStr += ` (${details.decision.confidence}%)`;
+            break;
+        case 'HUMAN_CHECKPOINT':
+            if (details.question) detailsStr = ` ${details.question.substring(0, 50)}...`;
+            break;
+        case 'HUMAN_DECISION':
+            if (details.decision) detailsStr = ` Human decided: ${details.decision}`;
+            break;
+        case 'WORKFLOW_COMPLETE':
+            detailsStr = ' Pipeline execution complete!';
+            break;
+        default:
+            if (details.message) detailsStr = ` ${details.message}`;
     }
 
+    let agentSpan = agentName !== 'system' ? `<span style="color: #9CA3AF; font-size: 0.75rem;"> · ${agentName}</span>` : '';
+    let detailsDiv = detailsStr ? `<div style="color: #555; font-size: 0.8rem; margin-top: 2px; line-height: 1.4;">${detailsStr}</div>` : '';
+
     return `
-    <div style="background: white; border-left: 4px solid ${color}; padding: 8px 12px; margin-bottom: 6px; border-radius: 4px; font-size: 0.85rem; cursor: pointer;"
+    <div style="background: white; border-left: 4px solid ${color}; padding: 10px 12px; margin-bottom: 6px; border-radius: 4px; font-size: 0.85rem; cursor: pointer; transition: all 0.2s;"
          onclick="expandLogEntry(this)">
-        <div style="display: flex; gap: 8px; align-items: center;">
-            <span style="font-size: 1.2rem;">${emoji}</span>
-            <div style="flex: 1;">
-                <strong style="color: ${color};">${entry.event_type}</strong>
-                <span style="color: #6b7280; font-size: 0.8rem;"> · ${agentName} · ${timestamp}</span>
-                <div style="color: #555; font-size: 0.8rem;">${detailsStr}</div>
+        <div style="display: flex; gap: 8px; align-items: flex-start;">
+            <span style="font-size: 1rem; flex-shrink: 0;">${emoji}</span>
+            <div style="flex: 1; min-width: 0;">
+                <strong style="color: ${color}; display: inline-block;">${entry.event_type}</strong>
+                <span style="color: #9CA3AF; font-size: 0.75rem; margin-left: 6px;">@${timestamp}</span>
+                ${agentSpan}
+                ${detailsDiv}
             </div>
         </div>
     </div>`;
@@ -637,7 +741,23 @@ function formatLogEntry(entry) {
 // Render log timeline
 function renderLogTimeline(log) {
     const timeline = document.getElementById('logTimeline');
-    timeline.innerHTML = log.map(entry => formatLogEntry(entry)).join('');
+    if (!timeline) {
+        console.warn('[LOG] Timeline element not found');
+        return;
+    }
+
+    if (!log || log.length === 0) {
+        timeline.innerHTML = '<div style="color: #9CA3AF; text-align: center; padding: 20px;">No log entries yet...</div>';
+        return;
+    }
+
+    const html = log.map(entry => {
+        if (!entry) return '';
+        return formatLogEntry(entry);
+    }).filter(h => h).join('');
+
+    timeline.innerHTML = html;
+    console.log('[LOG] Rendered', log.length, 'log entries');
 }
 
 // Toggle log visualizer visibility
@@ -675,6 +795,8 @@ function renderStateInspector(state) {
 // Log polling variables
 let logPollingInterval = null;
 let currentWorkflowId = null;
+let checkpointModalOpen = false;     // Is the modal currently displayed?
+let lastCheckpointId = null;         // Track last checkpoint to avoid duplicates
 
 // Start polling for logs
 function startLogPolling(workflowId) {
@@ -706,31 +828,46 @@ async function fetchAndUpdateLogs(workflowId) {
         // Update executor animation
         renderExecutionFlow(data);
 
-        // Update log timeline
-        if (data.execution_log) {
+        // Update log timeline - ensure log entries render
+        if (data.execution_log && Array.isArray(data.execution_log)) {
             renderLogTimeline(data.execution_log);
             // Auto-scroll to bottom
             const timeline = document.getElementById('logTimeline');
-            timeline.scrollTop = timeline.scrollHeight;
+            if (timeline) {
+                setTimeout(() => { timeline.scrollTop = timeline.scrollHeight; }, 0);
+            }
         }
 
         // Update state inspector
         renderStateInspector(data);
 
-        // Update live indicator
+        // Update live indicator and show results when complete
         const indicator = document.getElementById('logLiveIndicator');
         if (['COMPLETED', 'FAILED', 'HALTED'].includes(data.status)) {
             clearInterval(logPollingInterval);
             indicator.textContent = `⏹ ${data.status}`;
             indicator.style.color = data.status === 'COMPLETED' ? '#22c55e' : '#ef4444';
+
+            // Show pipeline results when completed
+            if (data.status === 'COMPLETED') {
+                renderPipelineResults(data);
+            }
         } else {
             indicator.textContent = '● LIVE';
             indicator.style.color = '#22c55e';
         }
 
-        // Check for pending human checkpoint
-        if (data.human_checkpoint_pending && data.checkpoint_details) {
-            showHumanCheckpointModal(data);
+        // Handle human checkpoint - only show modal if:
+        // 1. Checkpoint is pending
+        // 2. Modal is not already open
+        // 3. This is a NEW checkpoint (different ID)
+        if (data.human_checkpoint_pending && data.checkpoint_details && !checkpointModalOpen) {
+            const checkpointId = data.checkpoint_details.id || data.checkpoint_type;
+            if (lastCheckpointId !== checkpointId) {
+                lastCheckpointId = checkpointId;
+                checkpointModalOpen = true;
+                showHumanCheckpointModal(data);
+            }
         }
 
     } catch (err) {
@@ -740,6 +877,13 @@ async function fetchAndUpdateLogs(workflowId) {
 
 // Show human checkpoint modal with supervisor guidance
 function showHumanCheckpointModal(state) {
+    // Prevent multiple modals from stacking
+    if (modalOpen) return;
+    modalOpen = true;
+
+    // Remove any existing modals first
+    document.querySelectorAll('.modal-overlay').forEach(m => m.remove());
+
     const details = state.checkpoint_details || {};
     const guidance = details.supervisor_guidance || 'No guidance available';
     const checkpointType = state.checkpoint_type || 'CHECKPOINT';
@@ -780,7 +924,7 @@ function showHumanCheckpointModal(state) {
     <div class="modal-box" style="max-width: 500px;">
         <div class="modal-header">
             <h3 style="margin: 0;">Human Intervention Required</h3>
-            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove(); modalOpen = false; checkpointModalOpen = false;">&times;</button>
         </div>
         <div class="modal-body">
             ${contentHtml}
@@ -813,13 +957,20 @@ async function submitCheckpointDecision(decision, workflowId, modal) {
 
         if (res.ok) {
             modal.remove();
-            // Resume polling
-            fetchAndUpdateLogs(workflowId);
+            modalOpen = false;
+            checkpointModalOpen = false;  // Mark modal as closed
+            // Don't reset lastCheckpointId - keep it so we don't show the same checkpoint again
+            // Resume polling after a brief delay
+            setTimeout(() => fetchAndUpdateLogs(workflowId), 500);
         } else {
             alert('Failed to submit decision');
+            modalOpen = false;
+            checkpointModalOpen = false;
         }
     } catch (err) {
         alert('Error: ' + err.message);
+        modalOpen = false;
+        checkpointModalOpen = false;
     }
 }
 
@@ -835,7 +986,7 @@ async function executeWorkflow() {
     const btn = document.getElementById('executeBtn');
     const status = document.getElementById('execStatus');
     btn.disabled = true;
-    btn.textContent = 'Executing...';
+    btn.innerHTML = '<span class="spinner"></span>Executing...';
     status.textContent = 'Starting orchestration...';
     status.style.color = 'var(--accent)';
 
@@ -886,10 +1037,330 @@ function expandLogEntry(el) {
     el.style.borderLeftWidth = '6px';
 }
 
-// Initialize on page load
-window.addEventListener('load', () => {
-    renderGraphStructure();
+// Render pipeline results as expandable cards
+function renderPipelineResults(data) {
+    const resultsSection = document.getElementById('pipelineResultsSection');
+    const resultsBody = document.getElementById('pipelineResultsBody');
+
+    if (!resultsSection || !resultsBody) return;
+
+    resultsSection.style.display = 'block';
+    resultsBody.innerHTML = '';
+
+    const agentNames = ['profiler', 'quality', 'classifier', 'autoloader'];
+    const results = data.results || {};
+
+    agentNames.forEach(agent => {
+        const result = results[agent];
+        if (!result) return;
+
+        const isSuccess = result.status === 'SUCCESS';
+        const card = document.createElement('div');
+        card.style.cssText = 'border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;';
+
+        const header = document.createElement('div');
+        header.onclick = function() {
+            const content = this.nextElementSibling;
+            if (content) {
+                content.style.display = content.style.display === 'none' ? 'block' : 'none';
+                this.style.backgroundColor = content.style.display === 'block' ? (isSuccess ? '#DCFCE7' : '#FEE2E2') : (isSuccess ? '#F0FDF4' : '#FEF2F2');
+            }
+        };
+        header.style.cssText = `padding:12px 16px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;background:${isSuccess ? '#F0FDF4' : '#FEF2F2'};transition:all 0.2s;`;
+
+        const title = document.createElement('div');
+        title.style.cssText = 'display:flex;align-items:center;gap:12px;flex:1;';
+        title.innerHTML = `
+            <span style="font-weight:600;font-size:15px;">${agent.charAt(0).toUpperCase() + agent.slice(1)}</span>
+            <span style="padding:2px 8px;border-radius:12px;font-size:11px;font-weight:500;background:${isSuccess ? '#10B981' : '#EF4444'};color:white;">
+                ${result.status}
+            </span>
+            <span style="color:#6B7280;font-size:12px;">${result.duration_ms}ms</span>
+        `;
+
+        const toggle = document.createElement('span');
+        toggle.style.cssText = 'color:#6B7280;font-size:14px;';
+        toggle.textContent = '▼';
+
+        header.appendChild(title);
+        header.appendChild(toggle);
+
+        const content = document.createElement('div');
+        content.style.cssText = 'display:none;padding:12px 16px;background:#F9FAFB;max-height:400px;overflow-y:auto;border-top:1px solid #E5E7EB;';
+        content.innerHTML = `<pre style="white-space:pre-wrap;word-wrap:break-word;font-size:12px;margin:0;color:#374151;font-family:monospace;">${escapeHtml(result.output || 'No output')}</pre>`;
+
+        card.appendChild(header);
+        card.appendChild(content);
+        resultsBody.appendChild(card);
+    });
+
+    // Add quality score summary
+    if (data.quality_score) {
+        const summary = document.createElement('div');
+        summary.style.cssText = 'background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:12px;margin-top:12px;';
+        const piiText = data.pii_detected && data.pii_detected.length > 0 ? data.pii_detected.join(', ') : 'None';
+        summary.innerHTML = `<div style="font-size:14px;"><b>Quality Score:</b> ${data.quality_score}%</div><div style="font-size:14px;margin-top:6px;"><b>PII Detected:</b> ${piiText}</div>`;
+        resultsBody.appendChild(summary);
+    }
+}
+
+// ============================================================================
+// DRAG-AND-DROP FOR PIPELINE CARDS + AVAILABLE AGENTS PANEL
+// ============================================================================
+
+let draggedElement = null;
+
+function initDragDrop() {
+    console.log('[DRAGDROP] Initializing drag-drop');
+    const pipeline = document.getElementById('workflowPipeline');
+    if (!pipeline) {
+        console.error('[DRAGDROP] Pipeline element not found');
+        return false;
+    }
+
+    const cards = pipeline.querySelectorAll('.workflow-agent');
+    console.log('[DRAGDROP] Found', cards.length, 'cards to make draggable');
+
+    if (cards.length === 0) {
+        console.warn('[DRAGDROP] No cards found, will retry later');
+        return false;
+    }
+
+    cards.forEach((card, idx) => {
+        // Ensure draggable attribute is set
+        card.draggable = true;
+        card.dataset.dragIndex = idx;
+
+        // Add drag listeners
+        card.addEventListener('dragstart', function(e) {
+            draggedElement = this;
+            e.dataTransfer.effectAllowed = 'move';
+            this.style.opacity = '0.5';
+            this.style.border = '2px dashed #3B82F6';
+            console.log('[DRAGDROP] Drag started on card', idx);
+        }, false);
+
+        card.addEventListener('dragend', function(e) {
+            this.style.opacity = '1';
+            this.style.border = '';
+            draggedElement = null;
+            console.log('[DRAGDROP] Drag ended');
+        }, false);
+
+        card.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (draggedElement && draggedElement !== this) {
+                this.style.borderLeft = '4px solid #3B82F6';
+            }
+        }, false);
+
+        card.addEventListener('dragleave', function(e) {
+            this.style.borderLeft = '';
+        }, false);
+
+        card.addEventListener('drop', function(e) {
+            e.preventDefault();
+            this.style.borderLeft = '';
+
+            if (draggedElement && draggedElement !== this) {
+                console.log('[DRAGDROP] Drop detected');
+                const parent = pipeline;
+                const allCards = [...parent.querySelectorAll('.workflow-agent')];
+                const draggedIdx = allCards.indexOf(draggedElement);
+                const targetIdx = allCards.indexOf(this);
+
+                if (draggedIdx >= 0 && targetIdx >= 0) {
+                    if (draggedIdx < targetIdx) {
+                        this.parentNode.insertBefore(draggedElement, this.nextElementSibling);
+                    } else {
+                        this.parentNode.insertBefore(draggedElement, this);
+                    }
+                    saveWorkflowOrder();
+                    console.log('[DRAGDROP] Cards reordered:', draggedIdx, '->', targetIdx);
+                }
+            }
+        }, false);
+    });
+
+    console.log('[DRAGDROP] Drag-drop initialized successfully on', cards.length, 'cards');
+    return true;
+}
+
+function saveWorkflowOrder() {
+    const pipeline = document.getElementById('workflowPipeline');
+    const cards = pipeline.querySelectorAll('.workflow-agent');
+    const stepIds = Array.from(cards).map(c => c.dataset.stepId);
+
+    fetch('/api/solutions/' + SOLUTION_ID + '/reorder', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stepIds })
+    }).catch(err => console.log('Save order error:', err));
+}
+
+async function addAgentStep(endpointName) {
+    const res = await fetch('/api/solutions/' + SOLUTION_ID + '/steps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            name: endpointName.replace('mit_', '').replace('_endpoint', '').replace(/_/g, ' '),
+            endpointName: endpointName,
+            inputMapping: 'passthrough',
+            description: ''
+        })
+    });
+
+    if (res.ok) {
+        window.location.reload();
+    }
+}
+
+async function loadAvailableAgents() {
+    const list = document.getElementById('available-agents-list');
+    if (!list) {
+        console.error('[AGENTS] Element not found: available-agents-list');
+        return;
+    }
+
+    try {
+        const wsId = '<%= solution.workspaceId || "default-workspace" %>';
+        console.log('[AGENTS] Fetching from: /api/workspaces/' + wsId + '/endpoints');
+
+        const resp = await fetch('/api/workspaces/' + wsId + '/endpoints');
+        const data = await resp.json();
+        console.log('[AGENTS] Response:', data);
+
+        if (!data.endpoints || data.endpoints.length === 0) {
+            console.log('[AGENTS] No endpoints from API, using fallback demo agents');
+            // Fallback to demo agents if API returns empty
+            const demoAgents = [
+                { name: 'mit_structured_data_profiler_endpoint', state: 'READY' },
+                { name: 'mit_data_quality_agent_endpoint', state: 'READY' },
+                { name: 'mit_data_classifier_endpoint', state: 'READY' },
+                { name: 'mit_autoloader_agent_endpoint', state: 'READY' }
+            ];
+            renderAgentsList(demoAgents);
+            return;
+        }
+
+        renderAgentsList(data.endpoints);
+    } catch(e) {
+        console.error('[AGENTS] Error loading agents:', e);
+        // Use fallback demo agents on error
+        const demoAgents = [
+            { name: 'mit_structured_data_profiler_endpoint', state: 'READY' },
+            { name: 'mit_data_quality_agent_endpoint', state: 'READY' },
+            { name: 'mit_data_classifier_endpoint', state: 'READY' },
+            { name: 'mit_autoloader_agent_endpoint', state: 'READY' }
+        ];
+        renderAgentsList(demoAgents);
+    }
+}
+
+function renderAgentsList(endpoints) {
+    const list = document.getElementById('available-agents-list');
+    if (!list) return;
+
+    // Sort: READY first, then by name
+    const sorted = endpoints.sort((a, b) => {
+        if (a.state === 'READY' && b.state !== 'READY') return -1;
+        if (a.state !== 'READY' && b.state === 'READY') return 1;
+        return (a.name || '').localeCompare(b.name || '');
+    });
+
+    // Group agents by state
+    const readyAgents = sorted.filter(ep => ep.state === 'READY');
+    const stoppedAgents = sorted.filter(ep => ep.state !== 'READY');
+
+    // Build HTML
+    let html = '<div style="font-size: 10px; color: #9CA3AF; margin-bottom: 8px; padding: 6px 4px; border-bottom: 1px solid #E5E7EB; font-weight: 500;">✓ READY</div>';
+
+    // Show ready agents
+    if (readyAgents.length > 0) {
+        html += readyAgents.map(ep => `
+            <div style="background:white;border:1px solid #D1FAE5;border-radius:6px;padding:8px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:6px;">
+                <div style="font-size:11px;flex:1;">
+                    <div style="font-weight:500;color:#1F2937;">🤖 ${(ep.name || '').substring(0,16)}</div>
+                    <div style="color:#10B981;font-size:9px;">Ready</div>
+                </div>
+                <button onclick="addAgentStep('${ep.name}')" style="background:#3B82F6;color:white;border:none;border-radius:4px;padding:4px 8px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:500;">+ Add</button>
+            </div>
+        `).join('');
+    } else {
+        html += '<div style="color:#9CA3AF;font-size:10px;padding:8px;text-align:center;">No ready agents</div>';
+    }
+
+    // Show stopped agents if any
+    if (stoppedAgents.length > 0) {
+        html += '<div style="font-size: 10px; color: #9CA3AF; margin-top: 10px; margin-bottom: 8px; padding: 6px 4px; border-top: 1px solid #E5E7EB; border-bottom: 1px solid #E5E7EB; font-weight: 500;">⊘ STOPPED</div>';
+        html += stoppedAgents.map(ep => `
+            <div style="background:#F3F4F6;border:1px solid #E5E7EB;border-radius:6px;padding:8px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:6px;opacity:0.6;">
+                <div style="font-size:11px;flex:1;">
+                    <div style="font-weight:500;color:#9CA3AF;">🤖 ${(ep.name || '').substring(0,16)}</div>
+                    <div style="color:#9CA3AF;font-size:9px;">${ep.state || 'Stopped'}</div>
+                </div>
+                <button style="background:#D1D5DB;color:#9CA3AF;border:none;border-radius:4px;padding:4px 8px;font-size:10px;cursor:not-allowed;white-space:nowrap;opacity:0.5;" disabled>+ Add</button>
+            </div>
+        `).join('');
+    }
+
+    list.innerHTML = html;
+    console.log('[AGENTS] Rendered', readyAgents.length, 'ready agents,', stoppedAgents.length, 'stopped agents');
+}
+
+// Initialize immediately and on page load
+console.log('[INIT] Starting initialization');
+
+function initAll() {
+    try {
+        renderGraphStructure();
+        loadAvailableAgents();
+        const ddSuccess = initDragDrop();
+        if (!ddSuccess) {
+            console.log('[INIT] Retrying drag-drop in 1s...');
+            setTimeout(initDragDrop, 1000);
+        }
+    } catch(e) {
+        console.error('[INIT] Error:', e);
+    }
+}
+
+// Try to run immediately
+try {
+    console.log('[INIT] Running immediate init');
+    initAll();
+} catch(e) {
+    console.error('[INIT] Immediate init error:', e);
+}
+
+// Also run on DOMContentLoaded
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('[INIT] DOMContentLoaded fired');
+    initAll();
 });
+
+// And on window load as fallback
+window.addEventListener('load', () => {
+    console.log('[INIT] Window load fired');
+    initAll();
+});
+
+// Manual triggers with progressive delays
+setTimeout(() => {
+    console.log('[INIT] Timeout 500ms trigger');
+    initAll();
+}, 500);
+
+setTimeout(() => {
+    console.log('[INIT] Timeout 1s trigger');
+    initAll();
+}, 1000);
+
+setTimeout(() => {
+    console.log('[INIT] Timeout 2s trigger');
+    initAll();
+}, 2000);
 </script>
 
 <%- include('partials/footer') %>

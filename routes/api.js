@@ -3,6 +3,10 @@ const router = express.Router();
 const https = require('https');
 const http = require('http');
 const store = require('../data/store');
+const multer = require('multer');
+const csv = require('csv-parse/sync');
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 console.log('[API] Routes loaded - version 3');
 
@@ -378,68 +382,116 @@ router.put('/solutions/:id/reorder', (req, res) => {
     res.json(steps);
 });
 
-// ─── Execute Workflow ───
-router.post('/solutions/:id/execute', async (req, res) => {
-    const solution = store.getSolution(req.params.id);
-    if (!solution) return res.status(404).json({ error: 'Solution not found' });
+// ─── Execute Workflow (now uses LangGraph orchestrator) ───
+router.post('/solutions/:id/execute', upload.single('file'), async (req, res) => {
+    try {
+        const solution = store.getSolution(req.params.id);
+        if (!solution) return res.status(404).json({ error: 'Solution not found' });
 
-    // Resolve workspace config for this solution
-    let config;
-    if (solution.workspaceId) {
-        config = store.getWorkspace(solution.workspaceId);
-    }
-    if (!config) {
-        const workspaces = store.getAllWorkspaces();
-        config = workspaces.length > 0 ? workspaces[0] : store.getConfig();
-    }
-    if (!config || !config.workspaceUrl || !config.token) {
-        return res.status(400).json({ error: 'No workspace configured for this solution' });
-    }
-    if (solution.steps.length === 0) {
-        return res.status(400).json({ error: 'No steps in workflow' });
-    }
+        if (solution.steps.length === 0) {
+            return res.status(400).json({ error: 'No steps in workflow' });
+        }
 
-    const initialInput = req.body.input || '';
-    const broadcastMode = req.body.broadcastMode || false;
-    const results = [];
-    let currentInput = initialInput;
-    const priorOutputs = [];
-
-    for (const step of solution.steps.sort((a, b) => a.order - b.order)) {
-        let stepInput;
-        if (broadcastMode && priorOutputs.length > 0) {
-            const context = priorOutputs.map(p => `[${p.stepName} output]: ${p.output}`).join('\n\n');
-            stepInput = initialInput + '\n\n--- Previous Agent Results ---\n' + context;
+        // Handle file upload or JSON input
+        let inputData = '';
+        if (req.file) {
+            // Convert uploaded file to text/CSV for LangGraph
+            const fileContent = req.file.buffer.toString('utf-8');
+            inputData = fileContent;
         } else {
-            stepInput = currentInput;
+            inputData = req.body.input || '';
         }
 
-        const stepResult = { stepId: step.id, stepName: step.name, endpoint: step.endpointName, status: 'pending', input: stepInput, output: null, error: null, duration: 0 };
-        const start = Date.now();
+        if (!inputData) {
+            return res.status(400).json({ error: 'No input data provided' });
+        }
+
+        // Build agent order from solution steps (sorted by order)
+        // Map step names/endpoints to internal agent names for LangGraph
+        const agentNameMap = {
+            'profiler': 'profiler',
+            'data profiler': 'profiler',
+            'auto loader': 'profiler',
+            'profile': 'profiler',
+            'mit_structured_data_profiler_endpoint': 'profiler',
+
+            'quality': 'quality',
+            'data quality check': 'quality',
+            'quality check': 'quality',
+            'mit_data_quality_agent_endpoint': 'quality',
+            'mit_data_quality_agent_endpoint_qa': 'quality',
+
+            'classify': 'classify',
+            'classifier': 'classifier',
+            'classification': 'classifier',
+            'pii guard': 'classifier',
+            'mit_data_classifier_endpoint': 'classifier',
+
+            'autoload': 'autoloader',
+            'autoloader': 'autoloader',
+            'autoloader agent': 'autoloader',
+            'auto load': 'autoloader',
+            'mit_autoloader_agent_endpoint': 'autoloader'
+        };
+
+        const agentOrder = solution.steps
+            .sort((a, b) => a.order - b.order)
+            .map(step => {
+                const stepName = step.name.toLowerCase();
+                const endpointName = (step.endpointName || '').toLowerCase();
+                // Try step name first, then endpoint name
+                return agentNameMap[stepName] || agentNameMap[endpointName] || stepName;
+            });
+
+        console.log(`[Execute] Starting LangGraph orchestration for solution ${solution.id}, agents: ${agentOrder.join(', ')} (mapped from steps: ${solution.steps.map(s => s.name).join(', ')})`);
+
+        // Call the Python LangGraph orchestrator service
+        const orchestrationUrl = 'http://localhost:8001/orchestration/start';
+        const orchestrationPayload = {
+            user_id: 'ui-user',
+            input_data: inputData,
+            agent_order: agentOrder,
+            context: { solution_id: solution.id }
+        };
+
         try {
-            const payload = buildPayload(step, stepInput);
-            console.log(`[Step: ${step.name}] Mapping: ${step.inputMapping}, Broadcast: ${broadcastMode}`);
-            const response = await databricksRequest(config, 'POST', `/serving-endpoints/${step.endpointName}/invocations`, payload);
-            stepResult.output = response;
-            stepResult.status = 'success';
-            currentInput = extractOutput(response);
-            priorOutputs.push({ stepName: step.name, output: currentInput });
+            const response = await fetch(orchestrationUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(orchestrationPayload)
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                console.error(`[Execute Error] Orchestration service returned ${response.status}: ${errText}`);
+                return res.status(500).json({ error: `Orchestration service error: ${response.statusText}` });
+            }
+
+            const workflowData = await response.json();
+
+            console.log(`[Execute] Workflow started: ${workflowData.workflow_id}`);
+
+            // Store the workflow info for later retrieval
+            store.updateSolution(solution.id, {
+                lastRun: { timestamp: new Date().toISOString(), workflow_id: workflowData.workflow_id }
+            });
+
+            // Return the workflow ID so the UI can poll for results
+            res.json({
+                solutionId: solution.id,
+                workflow_id: workflowData.workflow_id,
+                status: workflowData.status,
+                message: 'Workflow started. Use workflow_id to poll for results.'
+            });
+
         } catch (err) {
-            stepResult.error = err.message;
-            stepResult.status = 'error';
-            stepResult.duration = Date.now() - start;
-            results.push(stepResult);
-            break;
+            console.error(`[Execute Error] Failed to call orchestration service:`, err.message);
+            res.status(500).json({ error: `Failed to start orchestration: ${err.message}` });
         }
-        stepResult.duration = Date.now() - start;
-        results.push(stepResult);
+    } catch (err) {
+        console.error('[Execute Error]', err);
+        res.status(500).json({ error: err.message });
     }
-
-    store.updateSolution(solution.id, {
-        lastRun: { timestamp: new Date().toISOString(), results, input: initialInput }
-    });
-
-    res.json({ solutionId: solution.id, results, finalOutput: currentInput });
 });
 
 // ─── Helpers ───

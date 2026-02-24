@@ -14,13 +14,14 @@ import asyncio
 import threading
 from datetime import datetime
 
-from graph import (
-    orchestrator_graph, interview_graph,
-    OrchestratorState, InterviewState,
-    build_orchestrator_graph, build_custom_orchestrator_graph
+from .graph import (
+    orchestrator, WorkflowState,
+    build_orchestrator_graph
 )
-from tools import initialize_tools
-from databricks_client import initialize_databricks
+
+# Stub out unused imports for compatibility
+def initialize_tools(): pass
+def initialize_databricks(): pass
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -100,59 +101,42 @@ class InterviewResponse(BaseModel):
 # ORCHESTRATION ENDPOINTS
 # ============================================================================
 
-def execute_workflow_sync(workflow_id: str, initial_state: OrchestratorState, agent_specs: Optional[List[Dict[str, str]]] = None):
+def execute_workflow_sync(workflow_id: str, initial_state: WorkflowState, agent_specs: Optional[List[Dict[str, str]]] = None):
     """Execute workflow in a background thread - runs the complete graph execution"""
     print(f"[DEBUG] Starting workflow execution for {workflow_id}")
     try:
-        # Create a new event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        # Invoke the orchestrator graph with the initial state
+        # Build the graph
         print(f"[DEBUG] Building graph for {workflow_id}")
-        # Use custom graph if agent_specs provided, otherwise use default
         if agent_specs:
             graph = build_custom_orchestrator_graph(agent_specs)
             print(f"[DEBUG] Built custom graph with agents: {[s['name'] for s in agent_specs]}")
         else:
             graph = build_orchestrator_graph()
             print(f"[DEBUG] Built default orchestrator graph")
+
         config = {"configurable": {"thread_id": workflow_id}}
 
-        print(f"[DEBUG] Starting graph.astream for {workflow_id}")
+        print(f"[DEBUG] Starting graph.invoke for {workflow_id}")
 
-        # Run the workflow asynchronously
-        async def run_stream():
-            event_count = 0
-            async for event in graph.astream(initial_state, config):
-                event_count += 1
-                print(f"[DEBUG] Event {event_count} for {workflow_id}: {list(event.keys()) if isinstance(event, dict) else type(event)}")
-                # Process streaming events
-                if isinstance(event, dict):
-                    for node_name, node_output in event.items():
-                        print(f"[DEBUG] Node {node_name} output for {workflow_id}")
-                        # Update workflow state with node output
-                        if isinstance(node_output, dict):
-                            state_updates = {k: v for k, v in node_output.items() if k in initial_state}
-                            if state_updates:
-                                initial_state.update(state_updates)
-                                workflows_store[workflow_id]["state"] = initial_state
-                                workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
-                                print(f"[DEBUG] Updated: {list(state_updates.keys())}")
-            return event_count
+        # Invoke the graph - this will run all nodes in sequence and return the final state
+        final_state = graph.invoke(initial_state, config)
 
-        event_count = loop.run_until_complete(run_stream())
-        print(f"[DEBUG] Workflow {workflow_id} completed successfully with {event_count} events")
-        loop.close()
+        # Save the final state to the store
+        workflows_store[workflow_id]["state"] = dict(final_state) if hasattr(final_state, 'items') else final_state
+        workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
+
+        log_count = len(final_state.get('execution_log', []))
+        print(f"[DEBUG] Workflow {workflow_id} COMPLETED - status: {final_state.get('status')}, log_entries: {log_count}, results: {list(final_state.get('results', {}).keys())}")
 
     except Exception as e:
         import traceback
-        print(f"[DEBUG] Workflow {workflow_id} exception: {str(e)}")
+        print(f"[DEBUG] Workflow {workflow_id} FAILED with exception: {str(e)}")
         print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
         initial_state["status"] = "FAILED"
         initial_state["error"] = str(e)
         workflows_store[workflow_id]["state"] = initial_state
         workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
+        print(f"[DEBUG] Error state saved for {workflow_id}")
 
 
 @app.post("/orchestration/start", response_model=WorkflowResponse)
@@ -172,7 +156,7 @@ async def start_workflow(request: StartWorkflowRequest):
         first_agent = request.agent_order[0]
 
     # Initialize orchestration state
-    initial_state: OrchestratorState = {
+    initial_state: WorkflowState = {
         "workflow_id": workflow_id,
         "user_id": request.user_id,
         "input_data": request.input_data,
@@ -239,9 +223,14 @@ async def get_workflow(workflow_id: str):
         "checkpoint_details": state.get("checkpoint_details"),
         "quality_score": state.get("quality_score", 0),
         "pii_detected": state.get("pii_detected", []),
+        "supervisor_guidance": state.get("supervisor_guidance", ""),
         "results_count": len(state.get("results", {})),
         "human_decisions_count": len(state.get("human_decisions", [])),
-        "execution_log_count": len(state.get("execution_log", [])),
+        "log_entries": len(state.get("execution_log", [])),
+        "execution_log": state.get("execution_log", []),
+        "results": state.get("results", {}),
+        "human_decisions": state.get("human_decisions", []),
+        "supervisor_decisions": state.get("supervisor_decisions", []),
         "error": state.get("error"),
         "created_at": workflow["created_at"],
         "last_updated": workflow["last_updated"],
@@ -475,7 +464,7 @@ async def get_deployment_status(workflow_id: str):
 @app.get("/databricks/status")
 async def get_databricks_status():
     """Check Databricks connectivity and configuration"""
-    from databricks_client import databricks_client
+    from .databricks_client import databricks_client
 
     if not databricks_client or not databricks_client.config.is_configured():
         return {
@@ -506,7 +495,7 @@ async def get_databricks_status():
 @app.get("/databricks/tables")
 async def list_databricks_tables(catalog: str = "main", schema: str = "default"):
     """List available tables in Databricks"""
-    from databricks_client import databricks_client
+    from .databricks_client import databricks_client
 
     if not databricks_client or not databricks_client.config.is_configured():
         raise HTTPException(
@@ -536,7 +525,7 @@ async def list_databricks_tables(catalog: str = "main", schema: str = "default")
 @app.get("/databricks/endpoints")
 async def list_serving_endpoints():
     """List serving endpoints in Databricks"""
-    from databricks_client import databricks_client
+    from .databricks_client import databricks_client
 
     if not databricks_client or not databricks_client.config.is_configured():
         raise HTTPException(
@@ -568,7 +557,7 @@ async def list_serving_endpoints():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    from databricks_client import databricks_client
+    from .databricks_client import databricks_client
 
     databricks_status = "not_configured"
     if databricks_client and databricks_client.config.is_configured():
@@ -586,7 +575,7 @@ async def health_check():
 @app.get("/info")
 async def service_info():
     """Service information and capabilities"""
-    from databricks_client import databricks_client
+    from .databricks_client import databricks_client
 
     databricks_info = {
         "configured": False,

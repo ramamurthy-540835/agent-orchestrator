@@ -25,7 +25,7 @@ source .env
 echo ""
 echo "Starting Python Orchestration Service (port 8001)..."
 source venv/bin/activate
-nohup python orchestration/server.py > /tmp/orchestration.log 2>&1 &
+nohup python -m orchestration.server > /tmp/orchestration.log 2>&1 &
 PYTHON_PID=$!
 echo "   PID: $PYTHON_PID"
 sleep 4
