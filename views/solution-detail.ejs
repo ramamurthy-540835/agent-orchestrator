@@ -838,6 +838,11 @@ async function fetchAndUpdateLogs(workflowId) {
             }
         }
 
+        // Update agent results in real-time (not just at completion)
+        if (data.results && Object.keys(data.results).length > 0) {
+            renderPipelineResults(data);
+        }
+
         // Update state inspector
         renderStateInspector(data);
 
@@ -1078,11 +1083,27 @@ function renderPipelineResults(data) {
             <span style="color:#6B7280;font-size:12px;">${result.duration_ms}ms</span>
         `;
 
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;gap:6px;align-items:center;';
+        actions.innerHTML = `
+            <button onclick="downloadAgentResult('${agent}', ${JSON.stringify(result).replace(/'/g, '&#39;')})"
+                style="padding:4px 10px;border:1px solid #D1D5DB;border-radius:4px;background:white;cursor:pointer;font-size:11px;color:#374151;"
+                title="Download as JSON">
+                ⬇ JSON
+            </button>
+            <button onclick="downloadAgentResultCSV('${agent}', ${JSON.stringify(result).replace(/'/g, '&#39;')})"
+                style="padding:4px 10px;border:1px solid #D1D5DB;border-radius:4px;background:white;cursor:pointer;font-size:11px;color:#374151;"
+                title="Download as Text">
+                ⬇ TXT
+            </button>
+        `;
+
         const toggle = document.createElement('span');
         toggle.style.cssText = 'color:#6B7280;font-size:14px;';
         toggle.textContent = '▼';
 
         header.appendChild(title);
+        header.appendChild(actions);
         header.appendChild(toggle);
 
         const content = document.createElement('div');
@@ -1102,6 +1123,54 @@ function renderPipelineResults(data) {
         summary.innerHTML = `<div style="font-size:14px;"><b>Quality Score:</b> ${data.quality_score}%</div><div style="font-size:14px;margin-top:6px;"><b>PII Detected:</b> ${piiText}</div>`;
         resultsBody.appendChild(summary);
     }
+}
+
+// Download agent result as JSON
+function downloadAgentResult(agent, result) {
+    const data = {
+        agent: agent,
+        status: result.status,
+        duration_ms: result.duration_ms,
+        timestamp: result.timestamp,
+        output: result.output,
+        quality_score: result.quality_score,
+        pii_detected: result.pii_detected
+    };
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${agent}-result-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    console.log(`[DOWNLOAD] Agent ${agent} result downloaded as JSON`);
+}
+
+// Download agent result as TXT
+function downloadAgentResultCSV(agent, result) {
+    const text = `Agent Result Report
+===================
+Agent: ${agent}
+Status: ${result.status}
+Duration: ${result.duration_ms}ms
+Timestamp: ${result.timestamp}
+
+Output:
+-------
+${result.output || 'No output'}
+
+Quality Score: ${result.quality_score || 'N/A'}%
+PII Detected: ${result.pii_detected ? result.pii_detected.join(', ') : 'None'}
+`;
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${agent}-result-${new Date().toISOString().slice(0,10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    console.log(`[DOWNLOAD] Agent ${agent} result downloaded as TXT`);
 }
 
 // ============================================================================

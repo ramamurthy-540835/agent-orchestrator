@@ -121,9 +121,15 @@ def execute_workflow_sync(workflow_id: str, initial_state: WorkflowState, agent_
         # Invoke the graph - this will run all nodes in sequence and return the final state
         final_state = graph.invoke(initial_state, config)
 
-        # Save the final state to the store
-        workflows_store[workflow_id]["state"] = dict(final_state) if hasattr(final_state, 'items') else final_state
+        # Save the final state to the store - update from final_state with all accumulated logs
+        final_dict = dict(final_state) if hasattr(final_state, 'items') else final_state
+        workflows_store[workflow_id]["state"] = final_dict
         workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
+
+        # Ensure status is updated
+        if final_dict.get("status") != "COMPLETED":
+            final_dict["status"] = "COMPLETED"
+            workflows_store[workflow_id]["state"] = final_dict
 
         log_count = len(final_state.get('execution_log', []))
         print(f"[DEBUG] Workflow {workflow_id} COMPLETED - status: {final_state.get('status')}, log_entries: {log_count}, results: {list(final_state.get('results', {}).keys())}")
