@@ -1,0 +1,84 @@
+<% var pageTitle = 'Dashboard'; var activePage = 'dashboard'; %>
+<%- include('partials/header', { solutions, pageTitle, activePage }) %>
+
+<!-- Welcome Section -->
+<div class="welcome-section">
+    <div class="welcome-content">
+        <h2>Welcome to Agent Orchestration Platform<span class="tagline">by BrickLabs</span></h2>
+        <p>Build end-to-end AI solutions by orchestrating multiple Databricks agent serving endpoints into sequential workflows. Create, configure, and execute multi-agent pipelines with ease.</p>
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="number" id="stat-solutions"><%= solutions.length %></div>
+                <div class="label">Solutions</div>
+            </div>
+            <div class="stat-card">
+                <div class="number" id="stat-agents"><%= solutions.reduce((sum, s) => sum + s.steps.length, 0) %></div>
+                <div class="label">Agent Steps</div>
+            </div>
+            <div class="stat-card">
+                <div class="number"><%= config.workspaceUrl ? '1' : '0' %></div>
+                <div class="label">Workspace</div>
+            </div>
+        </div>
+        <div class="welcome-actions">
+            <a href="/solutions/new" class="welcome-action-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Create New Solution
+            </a>
+            <a href="/settings" class="welcome-action-btn" style="background: var(--gray-600);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                Configure Databricks
+            </a>
+        </div>
+    </div>
+</div>
+
+<% if (workspaces.length === 0) { %>
+<div class="clean-section" style="border-left: 4px solid #FFB900; margin-bottom: 20px;">
+    <h3 style="color: #FFB900;">Setup Required</h3>
+    <p>You haven't configured any Databricks workspaces yet. <a href="/settings" style="color: var(--accent); font-weight: 600;">Go to Settings</a> to add your Dev, QA, or Production workspace. This is required to fetch agent serving endpoints and execute workflows.</p>
+</div>
+<% } %>
+
+<!-- Solutions Grid -->
+<div class="section-header">
+    <h2>My Solutions</h2>
+    <p>Orchestrate multiple Databricks agents into end-to-end workflows</p>
+</div>
+
+<% if (solutions.length === 0) { %>
+<div class="clean-section" style="text-align: center; padding: 60px 20px;">
+    <div style="font-size: 3rem; margin-bottom: 15px; opacity: 0.3;">&#x1f9e9;</div>
+    <h3 style="color: var(--gray-600); margin-bottom: 8px;">No Solutions Yet</h3>
+    <p style="color: var(--gray-500); margin-bottom: 20px;">Create your first solution to start orchestrating Databricks agents.</p>
+    <a href="/solutions/new" class="btn-blue" style="padding: 10px 24px; font-size: 0.9rem;">Create Your First Solution</a>
+</div>
+<% } else { %>
+<div class="agents-grid-clean">
+    <% solutions.forEach(solution => { %>
+    <div class="agent-card-clean" style="cursor: pointer;" onclick="window.location='/solutions/<%= solution.id %>'">
+        <div class="agent-card-header">
+            <span class="agent-icon-clean">&#x1f9e9;</span>
+            <span style="display: flex; gap: 4px; align-items: center;">
+                <% var ws = workspaces.find(w => w.id === solution.workspaceId); %>
+                <% if (ws) { %>
+                <span class="agent-badge-clean" style="font-size: 0.65rem; <%= ws.environment === 'production' ? 'background: #ef4444; color: white; border-color: #ef4444;' : ws.environment === 'qa' ? 'background: #f59e0b; color: white; border-color: #f59e0b;' : ws.environment === 'staging' ? 'background: #8b5cf6; color: white; border-color: #8b5cf6;' : 'background: #3b82f6; color: white; border-color: #3b82f6;' %>"><%= ws.environment.toUpperCase() %></span>
+                <% } %>
+                <span class="agent-badge-clean"><%= solution.status %></span>
+            </span>
+        </div>
+        <h4><%= solution.name %></h4>
+        <p><%= solution.description || 'No description' %></p>
+        <div class="agent-card-footer">
+            <span style="font-size: 0.75rem; color: var(--gray-500);"><%= solution.steps.length %> agent step<%= solution.steps.length !== 1 ? 's' : '' %></span>
+            <a href="/solutions/<%= solution.id %>" class="agent-try-now">
+                Open
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </a>
+        </div>
+    </div>
+    <% }); %>
+</div>
+<% } %>
+
+<%- include('partials/footer') %>

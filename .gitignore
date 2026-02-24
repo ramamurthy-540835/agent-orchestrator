@@ -1,0 +1,17 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+orchestration/__pycache__/
+orchestration/.venv/

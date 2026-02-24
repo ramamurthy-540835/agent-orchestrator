@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= typeof pageTitle !== 'undefined' ? pageTitle : 'Agent Orchestration' %> - BrickLabs</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/bricklabs.css">
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <a href="/"><img src="/img/mastech-logo.png" alt="Mastech" class="logo"></a>
+        </div>
+        <div class="header-center">
+            <h1>Agent Orchestration Platform</h1>
+        </div>
+        <div class="header-right">
+            <a href="/settings" class="back-link" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                Settings
+            </a>
+        </div>
+    </header>
+
+    <!-- Sidebar -->
+    <nav class="sidebar" id="sidebar">
+        <button class="sidebar-toggle" onclick="toggleSidebar()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div class="sidebar-nav">
+            <div class="nav-category expanded">
+                <div class="nav-category-header" data-tooltip="Dashboard">
+                    <span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></span>Navigation</span>
+                    <span class="arrow">&#9654;</span>
+                </div>
+                <div class="nav-items">
+                    <div class="nav-item <%= typeof activePage !== 'undefined' && activePage === 'dashboard' ? 'active' : '' %>" onclick="window.location='/'">
+                        Dashboard
+                    </div>
+                    <div class="nav-item <%= typeof activePage !== 'undefined' && activePage === 'new-solution' ? 'active' : '' %>" onclick="window.location='/solutions/new'">
+                        Create Solution
+                    </div>
+                    <div class="nav-item <%= typeof activePage !== 'undefined' && activePage === 'settings' ? 'active' : '' %>" onclick="window.location='/settings'">
+                        Settings
+                    </div>
+                </div>
+            </div>
+            <% if (typeof solutions !== 'undefined' && solutions && solutions.length > 0) { %>
+            <div class="nav-category expanded">
+                <div class="nav-category-header" data-tooltip="Solutions">
+                    <span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>My Solutions</span>
+                    <span class="arrow">&#9654;</span>
+                </div>
+                <div class="nav-items">
+                    <% solutions.forEach(s => { %>
+                    <div class="nav-item <%= typeof activeSolution !== 'undefined' && activeSolution === s.id ? 'active' : '' %>" onclick="window.location='/solutions/<%= s.id %>'">
+                        <%= s.name %>
+                    </div>
+                    <% }); %>
+                </div>
+            </div>
+            <% } %>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">

@@ -1,0 +1,614 @@
+"""
+FastAPI server for LangGraph orchestration.
+Provides HTTP endpoints for the Express frontend to call.
+Runs on port 8001.
+"""
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional, Dict, Any, List
+import uuid
+import json
+import asyncio
+import threading
+from datetime import datetime
+
+from graph import (
+    orchestrator_graph, interview_graph,
+    OrchestratorState, InterviewState,
+    build_orchestrator_graph
+)
+from tools import initialize_tools
+from databricks_client import initialize_databricks
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Agent Orchestration Service",
+    description="LangGraph-based multi-agent orchestration for Databricks",
+    version="1.0.0"
+)
+
+# Enable CORS for Express frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize tools and Databricks
+initialize_tools()
+initialize_databricks()
+
+# In-memory store for workflows (use Redis in production)
+workflows_store: Dict[str, Dict[str, Any]] = {}
+interviews_store: Dict[str, Dict[str, Any]] = {}
+
+
+# ============================================================================
+# REQUEST/RESPONSE MODELS
+# ============================================================================
+
+class StartWorkflowRequest(BaseModel):
+    """Request to start a new orchestration workflow"""
+    user_id: str
+    input_data: str
+    agent_order: Optional[List[str]] = None
+    context: Optional[Dict[str, Any]] = None
+
+
+class WorkflowResponse(BaseModel):
+    """Response with workflow status"""
+    workflow_id: str
+    status: str
+    current_agent: str
+    created_at: str
+    last_updated: str
+
+
+class SubmitApprovalRequest(BaseModel):
+    """Submit human approval decision"""
+    workflow_id: str
+    status: str  # "approve", "reject", "modify"
+    feedback: Optional[str] = None
+
+
+class StartInterviewRequest(BaseModel):
+    """Request to start a human interview"""
+    user_id: str
+
+
+class SubmitAnswerRequest(BaseModel):
+    """Submit answer to interview question"""
+    interview_id: str
+    answer: str
+
+
+class InterviewResponse(BaseModel):
+    """Response with interview question or completion"""
+    interview_id: str
+    status: str  # "question", "complete", "error"
+    question: Optional[str] = None
+    phase: Optional[str] = None
+    recommendation: Optional[str] = None
+
+
+# ============================================================================
+# ORCHESTRATION ENDPOINTS
+# ============================================================================
+
+def execute_workflow_sync(workflow_id: str, initial_state: OrchestratorState):
+    """Execute workflow in a background thread - runs the complete graph execution"""
+    print(f"[DEBUG] Starting workflow execution for {workflow_id}")
+    try:
+        # Create a new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # Invoke the orchestrator graph with the initial state
+        print(f"[DEBUG] Building graph for {workflow_id}")
+        graph = build_orchestrator_graph()
+        config = {"configurable": {"thread_id": workflow_id}}
+
+        print(f"[DEBUG] Starting graph.astream for {workflow_id}")
+
+        # Run the workflow asynchronously
+        async def run_stream():
+            event_count = 0
+            async for event in graph.astream(initial_state, config):
+                event_count += 1
+                print(f"[DEBUG] Event {event_count} for {workflow_id}: {list(event.keys()) if isinstance(event, dict) else type(event)}")
+                # Process streaming events
+                if isinstance(event, dict):
+                    for node_name, node_output in event.items():
+                        print(f"[DEBUG] Node {node_name} output for {workflow_id}")
+                        # Update workflow state with node output
+                        if isinstance(node_output, dict):
+                            state_updates = {k: v for k, v in node_output.items() if k in initial_state}
+                            if state_updates:
+                                initial_state.update(state_updates)
+                                workflows_store[workflow_id]["state"] = initial_state
+                                workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
+                                print(f"[DEBUG] Updated: {list(state_updates.keys())}")
+            return event_count
+
+        event_count = loop.run_until_complete(run_stream())
+        print(f"[DEBUG] Workflow {workflow_id} completed successfully with {event_count} events")
+        loop.close()
+
+    except Exception as e:
+        import traceback
+        print(f"[DEBUG] Workflow {workflow_id} exception: {str(e)}")
+        print(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
+        initial_state["status"] = "FAILED"
+        initial_state["error"] = str(e)
+        workflows_store[workflow_id]["state"] = initial_state
+        workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
+
+
+@app.post("/orchestration/start", response_model=WorkflowResponse)
+async def start_workflow(request: StartWorkflowRequest):
+    """
+    Start a new orchestration workflow.
+    Takes input data and initiates the multi-agent orchestration pipeline.
+    """
+    workflow_id = str(uuid.uuid4())
+    timestamp = datetime.now().isoformat()
+
+    # Initialize orchestration state
+    initial_state: OrchestratorState = {
+        "workflow_id": workflow_id,
+        "user_id": request.user_id,
+        "input_data": request.input_data,
+        "agent_order": request.agent_order or ["profiler", "quality", "classifier", "autoloader"],
+        "current_step": 0,
+        "current_agent": "profiler",
+        "results": {},
+        "quality_score": 0.0,
+        "pii_detected": [],
+        "human_decisions": [],
+        "execution_log": [],
+        "status": "RUNNING",
+        "error": None,
+        "human_checkpoint_pending": False,
+        "checkpoint_type": None,
+        "checkpoint_details": None,
+    }
+
+    # Store workflow metadata
+    workflows_store[workflow_id] = {
+        "state": initial_state,
+        "created_at": timestamp,
+        "last_updated": timestamp,
+        "thread_id": workflow_id,  # For LangGraph checkpointer
+        "config": {"configurable": {"thread_id": workflow_id}},
+    }
+
+    # Start workflow execution in a background thread
+    thread = threading.Thread(
+        target=execute_workflow_sync,
+        args=(workflow_id, initial_state),
+        daemon=True
+    )
+    thread.start()
+
+    return WorkflowResponse(
+        workflow_id=workflow_id,
+        status="RUNNING",
+        current_agent="profiler",
+        created_at=timestamp,
+        last_updated=timestamp,
+    )
+
+
+@app.get("/orchestration/{workflow_id}")
+async def get_workflow(workflow_id: str):
+    """Get current status of a workflow"""
+    if workflow_id not in workflows_store:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    workflow = workflows_store[workflow_id]
+    state = workflow["state"]
+
+    return {
+        "workflow_id": workflow_id,
+        "status": state.get("status", "RUNNING"),
+        "current_agent": state.get("current_agent"),
+        "current_step": state.get("current_step", 0),
+        "agent_order": state.get("agent_order", []),
+        "human_checkpoint_pending": state.get("human_checkpoint_pending"),
+        "checkpoint_type": state.get("checkpoint_type"),
+        "checkpoint_details": state.get("checkpoint_details"),
+        "quality_score": state.get("quality_score", 0),
+        "pii_detected": state.get("pii_detected", []),
+        "results_count": len(state.get("results", {})),
+        "human_decisions_count": len(state.get("human_decisions", [])),
+        "execution_log_count": len(state.get("execution_log", [])),
+        "error": state.get("error"),
+        "created_at": workflow["created_at"],
+        "last_updated": workflow["last_updated"],
+    }
+
+
+@app.post("/orchestration/{workflow_id}/decision")
+async def submit_decision(workflow_id: str, request: SubmitApprovalRequest):
+    """Submit human decision for a workflow checkpoint"""
+    if workflow_id not in workflows_store:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    workflow = workflows_store[workflow_id]
+    state = workflow["state"]
+
+    if not state.get("human_checkpoint_pending"):
+        raise HTTPException(status_code=400, detail="No pending decision for this workflow")
+
+    # Record the human decision
+    decision_record = {
+        "checkpoint": state.get("checkpoint_type"),
+        "decision": request.status,  # approve, fix, abort, modify, confirm_encryption
+        "timestamp": datetime.now().isoformat(),
+        "approver": "user",
+        "feedback": request.feedback or "",
+        "details": state.get("checkpoint_details", {})
+    }
+
+    decisions = list(state.get("human_decisions", []))
+    decisions.append(decision_record)
+    state["human_decisions"] = decisions
+
+    # Resume workflow - the graph will use this decision
+    state["human_checkpoint_pending"] = False
+    state["status"] = "RUNNING"
+    workflow["last_updated"] = datetime.now().isoformat()
+
+    return {
+        "workflow_id": workflow_id,
+        "status": "resumed",
+        "checkpoint": state.get("checkpoint_type"),
+        "decision_recorded": request.status,
+    }
+
+
+@app.get("/orchestration/{workflow_id}/results")
+async def get_workflow_results(workflow_id: str):
+    """Get detailed results for a workflow"""
+    if workflow_id not in workflows_store:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    workflow = workflows_store[workflow_id]
+    state = workflow["state"]
+
+    return {
+        "workflow_id": workflow_id,
+        "status": state.get("status"),
+        "quality_score": state.get("quality_score", 0),
+        "pii_detected": state.get("pii_detected", []),
+        "results": state.get("results", {}),
+        "human_decisions": state.get("human_decisions", []),
+        "execution_log": state.get("execution_log", []),
+        "error": state.get("error"),
+    }
+
+
+@app.get("/orchestration/{workflow_id}/log")
+async def get_workflow_log(workflow_id: str):
+    """Get execution log for a workflow"""
+    if workflow_id not in workflows_store:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    workflow = workflows_store[workflow_id]
+    state = workflow["state"]
+
+    return {
+        "workflow_id": workflow_id,
+        "execution_log": state.get("execution_log", []),
+    }
+
+
+# ============================================================================
+# INTERVIEW ENDPOINTS
+# ============================================================================
+
+@app.post("/interview/start", response_model=InterviewResponse)
+async def start_interview(request: StartInterviewRequest):
+    """Start a new solution design interview"""
+    interview_id = str(uuid.uuid4())
+    timestamp = datetime.now().isoformat()
+
+    initial_state: InterviewState = {
+        "messages": [],
+        "interview_responses": [],
+        "problem_description": "",
+        "user_role": "",
+        "data_sources": [],
+        "workspaces": [],
+        "scale_requirements": {},
+        "human_approval": False,
+        "current_phase": "problem",
+        "interview_complete": False,
+    }
+
+    interviews_store[interview_id] = {
+        "user_id": request.user_id,
+        "state": initial_state,
+        "created_at": timestamp,
+        "last_updated": timestamp,
+        "responses": []
+    }
+
+    # Start interview graph
+    # TODO: Actually invoke the interview_graph here
+    # For now, simulate first question
+    first_question = "What business problem are you trying to solve with agent orchestration?"
+
+    return InterviewResponse(
+        interview_id=interview_id,
+        status="question",
+        question=first_question,
+        phase="problem",
+    )
+
+
+@app.get("/interview/{interview_id}")
+async def get_interview(interview_id: str):
+    """Get current state of an interview"""
+    if interview_id not in interviews_store:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    interview = interviews_store[interview_id]
+    state = interview["state"]
+
+    return {
+        "interview_id": interview_id,
+        "phase": state.get("current_phase"),
+        "interview_complete": state.get("interview_complete"),
+        "responses_count": len(state.get("interview_responses", [])),
+        "created_at": interview["created_at"],
+    }
+
+
+@app.post("/interview/{interview_id}/answer", response_model=InterviewResponse)
+async def submit_answer(interview_id: str, request: SubmitAnswerRequest):
+    """Submit an answer to an interview question"""
+    if interview_id not in interviews_store:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    interview = interviews_store[interview_id]
+    state = interview["state"]
+
+    # Record response
+    state["interview_responses"].append({
+        "phase": state.get("current_phase"),
+        "answer": request.answer,
+        "timestamp": datetime.now().isoformat()
+    })
+
+    # Advance interview phase
+    responses_in_phase = len([r for r in state["interview_responses"] if r["phase"] == state["current_phase"]])
+
+    if state["current_phase"] == "problem" and responses_in_phase >= 3:
+        state["current_phase"] = "technical"
+        next_question = "What Databricks workspaces and serving endpoints do you currently have?"
+        phase = "technical"
+    elif state["current_phase"] == "technical" and responses_in_phase >= 3:
+        state["current_phase"] = "design"
+        next_question = "Do you need human-in-the-loop approval at any step?"
+        phase = "design"
+    elif state["current_phase"] == "design" and responses_in_phase >= 2:
+        state["interview_complete"] = True
+        recommendation = "Thank you! Your interview is complete. Generating recommendation..."
+        return InterviewResponse(
+            interview_id=interview_id,
+            status="complete",
+            recommendation=recommendation,
+        )
+    else:
+        # Continue in same phase
+        questions = {
+            "problem": [
+                "What business problem are you trying to solve?",
+                "Who are your end users? (data engineers, analysts, business users)",
+                "What data sources are involved? (Delta tables, APIs, documents)"
+            ],
+            "technical": [
+                "What Databricks workspaces and serving endpoints do you have?",
+                "Do agents need autonomous decisions or predetermined workflows?",
+                "What's your scale? (concurrent users, data volume, latency)"
+            ],
+            "design": [
+                "Do you need human-in-the-loop approval at any step?",
+                "Should agents share context/memory across conversations?"
+            ]
+        }
+        next_question = questions[state["current_phase"]][responses_in_phase]
+        phase = state["current_phase"]
+
+    interview["last_updated"] = datetime.now().isoformat()
+
+    return InterviewResponse(
+        interview_id=interview_id,
+        status="question",
+        question=next_question,
+        phase=phase,
+    )
+
+
+# ============================================================================
+# DEPLOYMENT ENDPOINTS (Phase 3)
+# ============================================================================
+
+@app.get("/deployment/status/{workflow_id}")
+async def get_deployment_status(workflow_id: str):
+    """Get deployment status for a workflow"""
+    if workflow_id not in workflows_store:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    workflow = workflows_store[workflow_id]
+    deployment_result = workflow["state"].get("results", {}).get("deployment", {})
+
+    return {
+        "workflow_id": workflow_id,
+        "deployment_status": deployment_result.get("status", "pending"),
+        "actions": deployment_result.get("actions", []),
+        "created_at": workflow["created_at"],
+    }
+
+
+@app.get("/databricks/status")
+async def get_databricks_status():
+    """Check Databricks connectivity and configuration"""
+    from databricks_client import databricks_client
+
+    if not databricks_client or not databricks_client.config.is_configured():
+        return {
+            "status": "not_configured",
+            "message": "Databricks credentials not set",
+            "configured": False
+        }
+
+    try:
+        # Try to list endpoints to verify connectivity
+        endpoints = await databricks_client.list_endpoints()
+        return {
+            "status": "connected",
+            "configured": True,
+            "host": databricks_client.config.host,
+            "workspace_id": databricks_client.config.workspace_id,
+            "endpoints_available": len(endpoints),
+            "message": "Databricks connected successfully"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "configured": True,
+            "message": f"Connection failed: {str(e)}"
+        }
+
+
+@app.get("/databricks/tables")
+async def list_databricks_tables(catalog: str = "main", schema: str = "default"):
+    """List available tables in Databricks"""
+    from databricks_client import databricks_client
+
+    if not databricks_client or not databricks_client.config.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Databricks not configured"
+        )
+
+    try:
+        tables = await databricks_client.list_tables(catalog, schema)
+        return {
+            "catalog": catalog,
+            "schema": schema,
+            "tables": [
+                {
+                    "name": t.get("name"),
+                    "type": t.get("object_type"),
+                    "created_at": t.get("created_timestamp")
+                }
+                for t in tables
+            ],
+            "total": len(tables)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing tables: {str(e)}")
+
+
+@app.get("/databricks/endpoints")
+async def list_serving_endpoints():
+    """List serving endpoints in Databricks"""
+    from databricks_client import databricks_client
+
+    if not databricks_client or not databricks_client.config.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Databricks not configured"
+        )
+
+    try:
+        endpoints = await databricks_client.list_endpoints()
+        return {
+            "endpoints": [
+                {
+                    "name": e.get("name"),
+                    "state": e.get("state"),
+                    "created_at": e.get("creation_timestamp")
+                }
+                for e in endpoints
+            ],
+            "total": len(endpoints)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing endpoints: {str(e)}")
+
+
+# ============================================================================
+# HEALTH & INFO ENDPOINTS
+# ============================================================================
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    from databricks_client import databricks_client
+
+    databricks_status = "not_configured"
+    if databricks_client and databricks_client.config.is_configured():
+        databricks_status = "configured"
+
+    return {
+        "status": "healthy",
+        "service": "Agent Orchestration Service",
+        "version": "2.0.0",
+        "phase": "Phase 3 (Databricks Integration)",
+        "databricks": databricks_status
+    }
+
+
+@app.get("/info")
+async def service_info():
+    """Service information and capabilities"""
+    from databricks_client import databricks_client
+
+    databricks_info = {
+        "configured": False,
+        "host": None,
+        "workspace_id": None
+    }
+
+    if databricks_client and databricks_client.config.is_configured():
+        databricks_info = {
+            "configured": True,
+            "host": databricks_client.config.host,
+            "workspace_id": databricks_client.config.workspace_id
+        }
+
+    return {
+        "service": "Agent Orchestration Service",
+        "version": "2.0.0",
+        "phase": "Phase 3 (Databricks Integration)",
+        "capabilities": [
+            "multi-agent orchestration",
+            "human-in-the-loop approval",
+            "interview-based requirement gathering",
+            "Databricks workspace integration",
+            "MLflow tracing",
+            "Job creation and deployment",
+            "Serving endpoint management"
+        ],
+        "active_workflows": len(workflows_store),
+        "active_interviews": len(interviews_store),
+        "databricks": databricks_info
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8001,
+        log_level="info"
+    )

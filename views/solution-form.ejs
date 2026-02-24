@@ -1,0 +1,87 @@
+<% var pageTitle = solution ? 'Edit Solution' : 'New Solution'; var activePage = 'new-solution'; var solutions = []; var activeSolution = solution ? solution.id : null; %>
+<%- include('partials/header', { solutions, pageTitle, activePage, activeSolution }) %>
+
+<div class="section-header">
+    <h2><%= solution ? 'Edit' : 'Create New' %> Solution</h2>
+    <p>Define a solution and build its agent orchestration workflow</p>
+</div>
+
+<div class="clean-section">
+    <h3>Solution Details</h3>
+    <form id="solutionForm" style="max-width: 600px;">
+        <div style="margin-bottom: 20px;">
+            <label style="display: block; font-size: 0.85rem; font-weight: 600; color: var(--gray-700); margin-bottom: 6px;">Solution Name *</label>
+            <input type="text" id="solutionName" value="<%= solution ? solution.name : '' %>" required
+                placeholder="e.g. Customer Support Pipeline"
+                style="width: 100%; padding: 10px 14px; border: 1px solid var(--border-medium); border-radius: 8px; font-size: 0.9rem; background: var(--gray-50);">
+        </div>
+        <div style="margin-bottom: 20px;">
+            <label style="display: block; font-size: 0.85rem; font-weight: 600; color: var(--gray-700); margin-bottom: 6px;">Description</label>
+            <textarea id="solutionDesc" rows="3" placeholder="Describe what this solution does..."
+                style="width: 100%; padding: 10px 14px; border: 1px solid var(--border-medium); border-radius: 8px; font-size: 0.9rem; background: var(--gray-50); resize: vertical; font-family: inherit;"><%= solution ? solution.description : '' %></textarea>
+        </div>
+        <div style="margin-bottom: 20px;">
+            <label style="display: block; font-size: 0.85rem; font-weight: 600; color: var(--gray-700); margin-bottom: 6px;">Workspace / Environment *</label>
+            <select id="solutionWorkspace" required style="width: 100%; padding: 10px 14px; border: 1px solid var(--border-medium); border-radius: 8px; font-size: 0.9rem; background: var(--gray-50);">
+                <option value="">-- Select a workspace --</option>
+                <% workspaces.forEach(ws => { %>
+                <option value="<%= ws.id %>" <%= solution && solution.workspaceId === ws.id ? 'selected' : '' %>><%= ws.name %> (<%= ws.environment.toUpperCase() %>)</option>
+                <% }); %>
+            </select>
+            <span style="font-size: 0.75rem; color: var(--gray-500); margin-top: 4px; display: block;">Choose which Databricks workspace this solution will run against</span>
+            <% if (workspaces.length === 0) { %>
+            <span style="font-size: 0.75rem; color: #f59e0b; margin-top: 4px; display: block;">No workspaces configured. <a href="/settings" style="color: var(--accent); font-weight: 600;">Add one in Settings</a> first.</span>
+            <% } %>
+        </div>
+        <% if (solution) { %>
+        <div style="margin-bottom: 20px;">
+            <label style="display: block; font-size: 0.85rem; font-weight: 600; color: var(--gray-700); margin-bottom: 6px;">Status</label>
+            <select id="solutionStatus" style="padding: 10px 14px; border: 1px solid var(--border-medium); border-radius: 8px; font-size: 0.9rem; background: var(--gray-50);">
+                <option value="draft" <%= solution.status === 'draft' ? 'selected' : '' %>>Draft</option>
+                <option value="active" <%= solution.status === 'active' ? 'selected' : '' %>>Active</option>
+                <option value="archived" <%= solution.status === 'archived' ? 'selected' : '' %>>Archived</option>
+            </select>
+        </div>
+        <% } %>
+        <button type="submit" class="btn-blue" style="padding: 10px 24px; border: none; cursor: pointer; font-size: 0.85rem;">
+            <%= solution ? 'Save Changes' : 'Create Solution' %>
+        </button>
+        <span id="formMsg" style="margin-left: 12px; font-size: 0.85rem;"></span>
+    </form>
+</div>
+
+<script>
+document.getElementById('solutionForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById('formMsg');
+    const isEdit = <%= solution ? 'true' : 'false' %>;
+    const solutionId = '<%= solution ? solution.id : '' %>';
+    const body = {
+        name: document.getElementById('solutionName').value.trim(),
+        description: document.getElementById('solutionDesc').value.trim(),
+        workspaceId: document.getElementById('solutionWorkspace').value
+    };
+    if (isEdit) {
+        body.status = document.getElementById('solutionStatus').value;
+    }
+
+    const url = isEdit ? '/api/solutions/' + solutionId : '/api/solutions';
+    const method = isEdit ? 'PUT' : 'POST';
+
+    const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+        window.location = '/solutions/' + data.id;
+    } else {
+        msg.style.color = '#ef4444';
+        msg.textContent = data.error || 'Error saving solution.';
+    }
+});
+</script>
+
+<%- include('partials/footer') %>
