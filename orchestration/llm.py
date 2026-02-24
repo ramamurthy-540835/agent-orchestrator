@@ -18,7 +18,7 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 # Model configuration
-MODEL_NAME = "gemini-2.0-flash"  # Fast, cost-effective model
+MODEL_NAME = "gemini-2.5-flash"  # Fast, cost-effective model with improved reasoning
 TEMPERATURE = 0.7  # Balanced creativity and consistency
 
 
@@ -374,3 +374,224 @@ Format as clear, structured recommendation for the user."""
         """You are an expert Azure Databricks architect generating a solution recommendation.
         Be specific, actionable, and professional in your response.""",
     )
+
+
+# ============================================================================
+# SUPERVISOR ANALYSIS FOR EXECUTION LOGS
+# ============================================================================
+
+async def supervisor_analyze_logs(
+    execution_log: List[Dict[str, Any]],
+    current_results: Dict[str, Dict[str, Any]],
+    quality_score: float,
+    pii_detected: List[str],
+) -> Dict[str, Any]:
+    """
+    Gemini supervisor analyzes execution logs and decides if human intervention
+    is needed beyond the 3 fixed gates.
+
+    Args:
+        execution_log: List of execution log entries
+        current_results: Dictionary of agent results {agent_name: result}
+        quality_score: Current quality score from quality agent
+        pii_detected: List of detected PII types
+
+    Returns:
+        {
+            "needs_human_intervention": bool,
+            "reason": str,
+            "guidance": str,      # AI-generated text for human reviewer
+            "severity": "INFO"|"WARNING"|"CRITICAL",
+            "suggested_action": str
+        }
+    """
+    # Build context from execution log
+    log_summary = []
+    for entry in execution_log[-20:]:  # Last 20 entries for context
+        log_summary.append(
+            f"[{entry['event_type']}] {entry['agent']}: {json.dumps(entry['details'], indent=0)}"
+        )
+    log_context = "\n".join(log_summary)
+
+    # Identify agent issues
+    agent_issues = []
+    for agent_name, result in current_results.items():
+        if result.get("status") == "FAILED":
+            agent_issues.append(f"{agent_name}: FAILED - {result.get('output', '')[:200]}")
+        elif result.get("status") == "RATE_LIMITED":
+            agent_issues.append(f"{agent_name}: RATE_LIMITED")
+        # Check for empty/malformed output
+        output = result.get("output", "")
+        if not output or (len(output) < 50 and result.get("status") == "SUCCESS"):
+            agent_issues.append(f"{agent_name}: Suspiciously short output ({len(output)} chars)")
+
+    prompt = f"""You are a Supervisor Agent analyzing the execution of a data pipeline.
+
+EXECUTION LOG (recent entries):
+{log_context}
+
+AGENT RESULTS SUMMARY:
+{json.dumps({k: {
+    "status": v.get("status"),
+    "duration_ms": v.get("duration_ms"),
+    "output_length": len(v.get("output", ""))
+} for k, v in current_results.items()}, indent=2)}
+
+POTENTIAL ISSUES DETECTED:
+{json.dumps(agent_issues) if agent_issues else "None detected"}
+
+CURRENT METRICS:
+- Quality Score: {quality_score}%
+- PII Detected: {json.dumps(pii_detected) if pii_detected else "None"}
+
+Analyze the execution and determine if human intervention is needed. Look for:
+1. Agent output format anomalies (malformed/empty JSON)
+2. Agent disagreements (e.g., profiler clean but quality flagged issues)
+3. Any FAILED/RATE_LIMITED agent results
+4. Unexpected data patterns or quality drops
+
+Respond with JSON:
+{{
+  "needs_human_intervention": true/false,
+  "reason": "Brief explanation of why intervention is/isn't needed",
+  "guidance": "Plain language explanation for human reviewer (1-2 sentences)",
+  "severity": "INFO|WARNING|CRITICAL",
+  "suggested_action": "Recommended action (approve, review carefully, abort, etc)"
+}}
+
+Be conservative: if there's any doubt about data quality or agent behavior, recommend intervention."""
+
+    try:
+        result = await llm.call_json(
+            prompt,
+            """You are a pipeline supervision expert. Analyze execution logs for anomalies and
+provide clear, actionable guidance. Respond ONLY with valid JSON.""",
+        )
+        return result
+    except Exception as e:
+        # Fallback: if quality is borderline, recommend caution
+        if 60 <= quality_score < 80 or agent_issues:
+            return {
+                "needs_human_intervention": True,
+                "reason": "Quality score in borderline range or agent issues detected",
+                "guidance": f"Quality score is {quality_score}%. Review carefully before proceeding.",
+                "severity": "WARNING",
+                "suggested_action": "Review quality report and agent outputs",
+            }
+        return {
+            "needs_human_intervention": False,
+            "reason": "No anomalies detected",
+            "guidance": "Pipeline execution appears normal.",
+            "severity": "INFO",
+            "suggested_action": "Proceed",
+        }
+
+
+async def autonomous_supervisor_decide(
+    analysis: Dict[str, Any],
+    quality_score: float,
+    pii_detected: List[str],
+) -> Dict[str, Any]:
+    """
+    Autonomous supervisor makes intelligent decisions without human intervention.
+    Uses conservative 90% confidence threshold as per system configuration.
+
+    Args:
+        analysis: Output from supervisor_analyze_logs()
+        quality_score: Current quality score
+        pii_detected: List of PII types detected
+
+    Returns:
+        {
+            "decision": "approve"|"fix"|"escalate",
+            "confidence": 0-100,
+            "reasoning": str,
+            "auto_action": "proceed"|"retry"|"halt",
+            "human_escalation": bool
+        }
+    """
+    severity = analysis.get("severity", "INFO")
+
+    # CRITICAL always escalates
+    if severity == "CRITICAL":
+        return {
+            "decision": "escalate",
+            "confidence": 95,
+            "reasoning": "CRITICAL severity detected. Requires human review.",
+            "auto_action": "halt",
+            "human_escalation": True,
+        }
+
+    # WARNING: evaluate based on quality score and confidence
+    if severity == "WARNING":
+        # If quality is very high (>90%), supervisor is confident to proceed
+        if quality_score >= 90 and not pii_detected:
+            return {
+                "decision": "approve",
+                "confidence": 92,
+                "reasoning": f"High quality score ({quality_score}%) despite warning. Safe to proceed.",
+                "auto_action": "proceed",
+                "human_escalation": False,
+            }
+        # If quality is acceptable (70-90%) and no critical PII, suggest fix/retry
+        elif quality_score >= 70:
+            return {
+                "decision": "fix",
+                "confidence": 85,
+                "reasoning": f"Quality score {quality_score}% indicates fixable issues. Recommend retry with adjustments.",
+                "auto_action": "retry",
+                "human_escalation": False,
+            }
+        # Quality too low - must escalate
+        else:
+            return {
+                "decision": "escalate",
+                "confidence": 88,
+                "reasoning": f"Quality score {quality_score}% is too low for autonomous proceed. Requires review.",
+                "auto_action": "halt",
+                "human_escalation": True,
+            }
+
+    # INFO: proceed with confidence if quality is good
+    if severity == "INFO":
+        if quality_score >= 80 and not pii_detected:
+            return {
+                "decision": "approve",
+                "confidence": 96,
+                "reasoning": "Pipeline executing normally. Quality is good. Safe to proceed.",
+                "auto_action": "proceed",
+                "human_escalation": False,
+            }
+        elif quality_score >= 75:
+            return {
+                "decision": "approve",
+                "confidence": 91,
+                "reasoning": f"Quality acceptable ({quality_score}%). Proceeding with confidence.",
+                "auto_action": "proceed",
+                "human_escalation": False,
+            }
+        elif quality_score >= 70:
+            return {
+                "decision": "approve",
+                "confidence": 88,
+                "reasoning": f"Quality borderline ({quality_score}%) but meets minimum threshold.",
+                "auto_action": "proceed",
+                "human_escalation": False,
+            }
+        else:
+            return {
+                "decision": "escalate",
+                "confidence": 89,
+                "reasoning": f"Quality score {quality_score}% below safe threshold.",
+                "auto_action": "halt",
+                "human_escalation": True,
+            }
+
+    # Default: conservative escalation
+    return {
+        "decision": "escalate",
+        "confidence": 60,
+        "reasoning": "Unable to make confident autonomous decision.",
+        "auto_action": "halt",
+        "human_escalation": True,
+    }

@@ -81,6 +81,48 @@
     </div>
 </div>
 
+<!-- LangGraph Orchestrator Visualization (Top Layer) -->
+<div class="clean-section" style="margin-top: 15px;">
+    <h3>LangGraph Orchestrator Structure</h3>
+    <p style="font-size: 0.85rem; color: var(--gray-600); margin-bottom: 12px;">Autonomous supervisor-guided execution flow with intelligent decision-making</p>
+    <div id="graphVisualization" style="background: #f9fafb; border: 1px solid var(--border-light); border-radius: 8px; padding: 16px; min-height: 200px; font-family: monospace; font-size: 0.85rem; overflow-x: auto;">
+        <pre id="graphAscii" style="margin: 0; color: var(--gray-700);">Loading graph structure...</pre>
+    </div>
+</div>
+
+<!-- Real-Time Execution Animator -->
+<div class="clean-section" id="executorAnimatorSection" style="display:none; margin-top: 15px;">
+    <h3>Live Execution Flow</h3>
+    <div id="executorTimeline" style="background: #f9fafb; border: 1px solid var(--border-light); border-radius: 8px; padding: 12px;">
+        <!-- Dynamically populated nodes -->
+    </div>
+</div>
+
+<!-- State Inspector Panel -->
+<div class="clean-section" id="stateInspectorSection" style="display:none; margin-top: 15px;">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h3>Execution State Inspector</h3>
+        <button class="btn-blue" style="font-size: 0.75rem; padding: 4px 10px; border: none; cursor: pointer;" onclick="toggleStateInspector()">Hide</button>
+    </div>
+    <div id="stateInspectorBody" style="background: #1E1E1E; color: #D4D4D4; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 0.8rem; max-height: 400px; overflow-y: auto;">
+        <!-- State details populated here -->
+    </div>
+</div>
+
+<!-- Log Visualizer Panel -->
+<div class="clean-section" id="logVisualizerSection" style="display:none; margin-top: 15px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h3 style="margin: 0;">Execution Log</h3>
+        <div style="display: flex; gap: 10px; align-items: center;">
+            <span id="logLiveIndicator" style="font-size: 0.8rem; color: #22c55e; font-weight: 600;">● LIVE</span>
+            <button class="btn-blue" style="font-size: 0.75rem; padding: 4px 10px; border: none; cursor: pointer;" onclick="toggleLogVisualizer()">Hide</button>
+        </div>
+    </div>
+    <div id="logTimeline" style="background: #f9fafb; border: 1px solid var(--border-light); border-radius: 8px; padding: 12px; max-height: 500px; overflow-y: auto;">
+        <!-- Log entries rendered here -->
+    </div>
+</div>
+
 <!-- Execution Panel -->
 <div class="clean-section" style="margin-top: 15px;">
     <h3>Execute Workflow</h3>
@@ -434,6 +476,419 @@ document.querySelectorAll('.workflow-agent').forEach(node => {
         });
         window.location.reload();
     });
+});
+
+// ============================================================================
+// LANGGRAPH VISUALIZER + REAL-TIME EXECUTION ANIMATOR
+// ============================================================================
+
+// Event type colors for log visualization
+const EVENT_COLORS = {
+    'AGENT_CALL': '#3b82f6',        // blue 🔵
+    'AGENT_RESULT': '#22c55e',      // green ✅
+    'AGENT_RESULT_FAILED': '#ef4444', // red ❌
+    'ROUTING_DECISION': '#a855f7',  // purple 🔀
+    'HUMAN_CHECKPOINT': '#f59e0b',  // orange ⚠️
+    'HUMAN_DECISION': '#14b8a6',    // teal 👤
+    'SUPERVISOR_ANALYSIS': '#6366f1', // indigo 🧠
+    'WORKFLOW_COMPLETE': '#22c55e'  // green 🏁
+};
+
+const EVENT_EMOJI = {
+    'AGENT_CALL': '🔵',
+    'AGENT_RESULT': '✅',
+    'AGENT_RESULT_FAILED': '❌',
+    'ROUTING_DECISION': '🔀',
+    'HUMAN_CHECKPOINT': '⚠️',
+    'HUMAN_DECISION': '👤',
+    'SUPERVISOR_ANALYSIS': '🧠',
+    'WORKFLOW_COMPLETE': '🏁'
+};
+
+// Render LangGraph structure (ASCII diagram)
+function renderGraphStructure() {
+    const steps = document.querySelectorAll('[data-step-id]');
+    const stepNames = Array.from(steps).map(s => s.querySelector('.workflow-node-name').textContent);
+
+    const ascii = `
+  START
+    │
+    ├─→ [Profile Agent]
+    │   └─→ [Supervisor] (analyze log)
+    │       ↓
+    ├─→ [Quality Agent]
+    │   └─→ [Supervisor] (check quality, confidence)
+    │       ↓
+    ├─→ [Quality Gate] ← if score < 60: escalate to human
+    │   └─→ auto-approve (>80%) or auto-escalate (<60%)
+    │       ↓
+    ├─→ [Classify Agent] ${stepNames.includes('classifier') ? '✓' : '(if enabled)'}
+    │   └─→ [Supervisor] (check PII, anomalies)
+    │       ↓
+    ├─→ [PII Gate] ← if CRITICAL: escalate to human
+    │   └─→ auto-approve or escalate
+    │       ↓
+    ├─→ [AutoLoader Agent]
+    │   └─→ [Supervisor] (check generated code)
+    │       ↓
+    ├─→ [Pipeline Review] ← if CRITICAL: manual review
+    │   └─→ Approve/Modify/Abort
+    │       ↓
+    └─→ [Complete]
+        └─→ END
+
+  🧠 Supervisor Decision Flow:
+     If confidence >= 90%: AUTO-PROCEED
+     If 60% <= confidence < 90%: ESCALATE to human
+     If confidence < 60%: HALT
+    `;
+
+    document.getElementById('graphAscii').textContent = ascii;
+}
+
+// Real-time executor timeline animation
+function renderExecutionFlow(state) {
+    const timeline = document.getElementById('executorTimeline');
+    const nodeOrder = [
+        'profile', 'supervisor_after_profile',
+        'quality', 'supervisor_after_quality', 'quality_gate',
+        'classify', 'supervisor_after_classify', 'pii_gate',
+        'autoloader', 'supervisor_after_autoloader',
+        'pipeline_review', 'complete'
+    ];
+
+    let html = '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px;">';
+
+    nodeOrder.forEach(nodeName => {
+        const isRunning = state.current_agent === nodeName;
+        const isCompleted = state.execution_log && state.execution_log.some(
+            e => e.agent === nodeName && (e.event_type === 'AGENT_RESULT' || e.event_type === 'ROUTING_DECISION')
+        );
+        const isFailed = state.execution_log && state.execution_log.some(
+            e => e.agent === nodeName && e.event_type === 'AGENT_RESULT' && e.details?.status === 'FAILED'
+        );
+
+        let bgColor = '#f3f4f6';  // default gray
+        let borderColor = '#d1d5db';
+        let emoji = '⭕';
+
+        if (isFailed) {
+            bgColor = '#fee2e2';
+            borderColor = '#ef4444';
+            emoji = '❌';
+        } else if (isRunning) {
+            bgColor = '#dbeafe';
+            borderColor = '#3b82f6';
+            emoji = '⚡';
+        } else if (isCompleted) {
+            bgColor = '#dcfce7';
+            borderColor = '#22c55e';
+            emoji = '✅';
+        }
+
+        const displayName = nodeName.replace(/_/g, ' ').replace(/supervisor after/, 'Supervisor').replace(/gate/, 'Gate');
+
+        html += `
+        <div style="background: ${bgColor}; border: 2px solid ${borderColor}; border-radius: 8px; padding: 10px; text-align: center; font-size: 0.75rem; cursor: pointer;"
+             title="${nodeName}" onclick="highlightLogEntry('${nodeName}')">
+            <div style="font-size: 1.2rem; margin-bottom: 4px;">${emoji}</div>
+            <div style="font-weight: 600;">${displayName}</div>
+        </div>`;
+    });
+
+    html += '</div>';
+    timeline.innerHTML = html;
+}
+
+// Format log entry with color and emoji
+function formatLogEntry(entry) {
+    const color = EVENT_COLORS[entry.event_type] || '#6b7280';
+    const emoji = EVENT_EMOJI[entry.event_type] || '📝';
+    const timestamp = new Date(entry.timestamp).toLocaleTimeString();
+    const agentName = entry.agent || 'system';
+
+    let detailsStr = '';
+    if (entry.details) {
+        if (entry.event_type === 'AGENT_RESULT') {
+            detailsStr = ` [${entry.details.status}] (${entry.details.duration_ms}ms)`;
+        } else if (entry.event_type === 'ROUTING_DECISION') {
+            detailsStr = ` ${entry.details.action || ''} ${entry.details.reason ? '(' + entry.details.reason.substring(0, 50) + '...)' : ''}`;
+        } else if (entry.event_type === 'SUPERVISOR_ANALYSIS') {
+            detailsStr = ` [${entry.details.decision?.decision}] confidence: ${entry.details.decision?.confidence}%`;
+        } else if (entry.details.quality_score !== undefined) {
+            detailsStr = ` (score: ${entry.details.quality_score}%)`;
+        }
+    }
+
+    return `
+    <div style="background: white; border-left: 4px solid ${color}; padding: 8px 12px; margin-bottom: 6px; border-radius: 4px; font-size: 0.85rem; cursor: pointer;"
+         onclick="expandLogEntry(this)">
+        <div style="display: flex; gap: 8px; align-items: center;">
+            <span style="font-size: 1.2rem;">${emoji}</span>
+            <div style="flex: 1;">
+                <strong style="color: ${color};">${entry.event_type}</strong>
+                <span style="color: #6b7280; font-size: 0.8rem;"> · ${agentName} · ${timestamp}</span>
+                <div style="color: #555; font-size: 0.8rem;">${detailsStr}</div>
+            </div>
+        </div>
+    </div>`;
+}
+
+// Render log timeline
+function renderLogTimeline(log) {
+    const timeline = document.getElementById('logTimeline');
+    timeline.innerHTML = log.map(entry => formatLogEntry(entry)).join('');
+}
+
+// Toggle log visualizer visibility
+function toggleLogVisualizer() {
+    const section = document.getElementById('logVisualizerSection');
+    section.style.display = section.style.display === 'none' ? 'block' : 'none';
+}
+
+// Toggle state inspector visibility
+function toggleStateInspector() {
+    const section = document.getElementById('stateInspectorSection');
+    section.style.display = section.style.display === 'none' ? 'block' : 'none';
+}
+
+// Render state inspector
+function renderStateInspector(state) {
+    const inspector = document.getElementById('stateInspectorBody');
+    const stateStr = JSON.stringify({
+        workflow_id: state.workflow_id,
+        status: state.status,
+        current_agent: state.current_agent,
+        current_step: state.current_step,
+        quality_score: state.quality_score,
+        pii_detected: state.pii_detected,
+        supervisor_guidance: state.supervisor_guidance?.substring(0, 100),
+        checkpoint_pending: state.human_checkpoint_pending,
+        checkpoint_type: state.checkpoint_type,
+        results_count: Object.keys(state.results || {}).length,
+        log_entries: (state.execution_log || []).length,
+        human_decisions: (state.human_decisions || []).length
+    }, null, 2);
+    inspector.textContent = stateStr;
+}
+
+// Log polling variables
+let logPollingInterval = null;
+let currentWorkflowId = null;
+
+// Start polling for logs
+function startLogPolling(workflowId) {
+    currentWorkflowId = workflowId;
+
+    // Show visualization sections
+    document.getElementById('executorAnimatorSection').style.display = 'block';
+    document.getElementById('logVisualizerSection').style.display = 'block';
+    document.getElementById('stateInspectorSection').style.display = 'block';
+
+    // Render initial graph structure
+    renderGraphStructure();
+
+    // Poll every 1 second for live updates
+    logPollingInterval = setInterval(() => fetchAndUpdateLogs(workflowId), 1000);
+
+    // First fetch immediately
+    fetchAndUpdateLogs(workflowId);
+}
+
+// Fetch and update logs in real-time
+async function fetchAndUpdateLogs(workflowId) {
+    try {
+        const resp = await fetch(`/api/orchestration/${workflowId}`);
+        const data = await resp.json();
+
+        if (!data) return;
+
+        // Update executor animation
+        renderExecutionFlow(data);
+
+        // Update log timeline
+        if (data.execution_log) {
+            renderLogTimeline(data.execution_log);
+            // Auto-scroll to bottom
+            const timeline = document.getElementById('logTimeline');
+            timeline.scrollTop = timeline.scrollHeight;
+        }
+
+        // Update state inspector
+        renderStateInspector(data);
+
+        // Update live indicator
+        const indicator = document.getElementById('logLiveIndicator');
+        if (['COMPLETED', 'FAILED', 'HALTED'].includes(data.status)) {
+            clearInterval(logPollingInterval);
+            indicator.textContent = `⏹ ${data.status}`;
+            indicator.style.color = data.status === 'COMPLETED' ? '#22c55e' : '#ef4444';
+        } else {
+            indicator.textContent = '● LIVE';
+            indicator.style.color = '#22c55e';
+        }
+
+        // Check for pending human checkpoint
+        if (data.human_checkpoint_pending && data.checkpoint_details) {
+            showHumanCheckpointModal(data);
+        }
+
+    } catch (err) {
+        console.error('Error fetching logs:', err);
+    }
+}
+
+// Show human checkpoint modal with supervisor guidance
+function showHumanCheckpointModal(state) {
+    const details = state.checkpoint_details || {};
+    const guidance = details.supervisor_guidance || 'No guidance available';
+    const checkpointType = state.checkpoint_type || 'CHECKPOINT';
+
+    let contentHtml = `
+    <div style="background: #f9fafb; border: 1px solid var(--border-light); border-radius: 8px; padding: 14px; margin-bottom: 14px;">
+        <div style="display: flex; gap: 10px; align-items: flex-start;">
+            <span style="font-size: 1.5rem;">🧠</span>
+            <div>
+                <strong style="color: #6366f1;">Supervisor Guidance</strong>
+                <p style="margin: 6px 0 0; color: #555; font-size: 0.9rem;">${guidance}</p>
+            </div>
+        </div>
+    </div>`;
+
+    if (checkpointType.includes('QUALITY')) {
+        contentHtml += `
+        <div style="background: #e0f2fe; border: 1px solid #0284c7; border-radius: 8px; padding: 12px; margin-bottom: 14px;">
+            <strong style="color: #0284c7;">Quality Score</strong>
+            <p style="margin: 4px 0 0; color: #0c4a6e; font-size: 0.85rem;">${state.quality_score || 0}%</p>
+        </div>`;
+    }
+
+    if (checkpointType.includes('PII') && state.pii_detected?.length) {
+        contentHtml += `
+        <div style="background: #fee2e2; border: 1px solid #ef4444; border-radius: 8px; padding: 12px; margin-bottom: 14px;">
+            <strong style="color: #ef4444;">PII Detected</strong>
+            <p style="margin: 4px 0 0; color: #7f1d1d; font-size: 0.85rem;">${state.pii_detected.join(', ')}</p>
+        </div>`;
+    }
+
+    // Create and show modal (you can use your existing modal or create new one)
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.style.display = 'flex';
+    modal.style.zIndex = '9999';
+    modal.innerHTML = `
+    <div class="modal-box" style="max-width: 500px;">
+        <div class="modal-header">
+            <h3 style="margin: 0;">Human Intervention Required</h3>
+            <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">&times;</button>
+        </div>
+        <div class="modal-body">
+            ${contentHtml}
+            <div style="background: #f9fafb; border: 1px solid var(--border-light); border-radius: 8px; padding: 12px;">
+                <strong>Decision:</strong>
+                <p style="margin: 6px 0 0; color: #555; font-size: 0.85rem;">Review the guidance above and choose an action.</p>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button style="padding: 8px 20px; border: 1px solid var(--border-medium); border-radius: 8px; background: white; cursor: pointer; font-size: 0.85rem;"
+                    onclick="submitCheckpointDecision('approve', '${currentWorkflowId}', this.closest('.modal-overlay'))">✓ Approve</button>
+            <button style="padding: 8px 20px; border: 1px solid var(--border-medium); border-radius: 8px; background: white; cursor: pointer; font-size: 0.85rem;"
+                    onclick="submitCheckpointDecision('fix', '${currentWorkflowId}', this.closest('.modal-overlay'))">🔧 Fix / Retry</button>
+            <button style="padding: 8px 20px; border: 1px solid #ef4444; border-radius: 8px; background: white; color: #ef4444; cursor: pointer; font-size: 0.85rem;"
+                    onclick="submitCheckpointDecision('abort', '${currentWorkflowId}', this.closest('.modal-overlay'))">✗ Abort</button>
+        </div>
+    </div>`;
+
+    document.body.appendChild(modal);
+}
+
+// Submit checkpoint decision
+async function submitCheckpointDecision(decision, workflowId, modal) {
+    try {
+        const res = await fetch(`/api/orchestration/${workflowId}/decision`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ decision })
+        });
+
+        if (res.ok) {
+            modal.remove();
+            // Resume polling
+            fetchAndUpdateLogs(workflowId);
+        } else {
+            alert('Failed to submit decision');
+        }
+    } catch (err) {
+        alert('Error: ' + err.message);
+    }
+}
+
+// Update executeWorkflow to start log polling
+const originalExecuteWorkflow = executeWorkflow;
+async function executeWorkflow() {
+    let input = document.getElementById('execInput').value.trim();
+    if (!input && !uploadedFileContent) { alert('Please enter an input prompt or attach a file.'); return; }
+    if (uploadedFileContent) {
+        input = input ? input + '\n\n[Attached File Content]\n' + uploadedFileContent : uploadedFileContent;
+    }
+
+    const btn = document.getElementById('executeBtn');
+    const status = document.getElementById('execStatus');
+    btn.disabled = true;
+    btn.textContent = 'Executing...';
+    status.textContent = 'Starting orchestration...';
+    status.style.color = 'var(--accent)';
+
+    try {
+        const res = await fetch('/api/solutions/' + SOLUTION_ID + '/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input, broadcastMode: document.getElementById('broadcastMode').checked })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            status.textContent = data.error || 'Execution failed.';
+            status.style.color = '#ef4444';
+            btn.disabled = false;
+            btn.innerHTML = '&#x25B6; Execute Pipeline';
+            return;
+        }
+
+        // Start log polling for real-time visualization
+        if (data.workflow_id) {
+            startLogPolling(data.workflow_id);
+        }
+
+        status.textContent = 'Pipeline running...';
+        status.style.color = 'var(--accent)';
+    } catch (err) {
+        status.textContent = 'Error: ' + err.message;
+        status.style.color = '#ef4444';
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = '&#x25B6; Execute Pipeline';
+}
+
+// Helper to highlight log entries
+function highlightLogEntry(agentName) {
+    const entries = document.querySelectorAll('#logTimeline > div');
+    entries.forEach(e => e.style.opacity = '0.3');
+    document.querySelectorAll('#logTimeline > div').forEach(e => {
+        if (e.textContent.includes(agentName)) e.style.opacity = '1';
+    });
+}
+
+// Helper to expand log entry details
+function expandLogEntry(el) {
+    el.style.backgroundColor = '#eff6ff';
+    el.style.borderLeftWidth = '6px';
+}
+
+// Initialize on page load
+window.addEventListener('load', () => {
+    renderGraphStructure();
 });
 </script>
 
