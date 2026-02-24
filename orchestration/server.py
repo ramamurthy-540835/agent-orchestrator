@@ -17,7 +17,7 @@ from datetime import datetime
 from graph import (
     orchestrator_graph, interview_graph,
     OrchestratorState, InterviewState,
-    build_orchestrator_graph
+    build_orchestrator_graph, build_custom_orchestrator_graph
 )
 from tools import initialize_tools
 from databricks_client import initialize_databricks
@@ -56,6 +56,7 @@ class StartWorkflowRequest(BaseModel):
     user_id: str
     input_data: str
     agent_order: Optional[List[str]] = None
+    agent_specs: Optional[List[Dict[str, str]]] = None  # Dynamic agents: [{"name": "agent", "endpoint": "endpoint"}]
     context: Optional[Dict[str, Any]] = None
 
 
@@ -99,7 +100,7 @@ class InterviewResponse(BaseModel):
 # ORCHESTRATION ENDPOINTS
 # ============================================================================
 
-def execute_workflow_sync(workflow_id: str, initial_state: OrchestratorState):
+def execute_workflow_sync(workflow_id: str, initial_state: OrchestratorState, agent_specs: Optional[List[Dict[str, str]]] = None):
     """Execute workflow in a background thread - runs the complete graph execution"""
     print(f"[DEBUG] Starting workflow execution for {workflow_id}")
     try:
@@ -109,7 +110,13 @@ def execute_workflow_sync(workflow_id: str, initial_state: OrchestratorState):
 
         # Invoke the orchestrator graph with the initial state
         print(f"[DEBUG] Building graph for {workflow_id}")
-        graph = build_orchestrator_graph()
+        # Use custom graph if agent_specs provided, otherwise use default
+        if agent_specs:
+            graph = build_custom_orchestrator_graph(agent_specs)
+            print(f"[DEBUG] Built custom graph with agents: {[s['name'] for s in agent_specs]}")
+        else:
+            graph = build_orchestrator_graph()
+            print(f"[DEBUG] Built default orchestrator graph")
         config = {"configurable": {"thread_id": workflow_id}}
 
         print(f"[DEBUG] Starting graph.astream for {workflow_id}")
@@ -157,6 +164,13 @@ async def start_workflow(request: StartWorkflowRequest):
     workflow_id = str(uuid.uuid4())
     timestamp = datetime.now().isoformat()
 
+    # Determine first agent name for entry point
+    first_agent = "profiler"
+    if request.agent_specs:
+        first_agent = request.agent_specs[0]["name"]
+    elif request.agent_order:
+        first_agent = request.agent_order[0]
+
     # Initialize orchestration state
     initial_state: OrchestratorState = {
         "workflow_id": workflow_id,
@@ -164,7 +178,7 @@ async def start_workflow(request: StartWorkflowRequest):
         "input_data": request.input_data,
         "agent_order": request.agent_order or ["profiler", "quality", "classifier", "autoloader"],
         "current_step": 0,
-        "current_agent": "profiler",
+        "current_agent": first_agent,
         "results": {},
         "quality_score": 0.0,
         "pii_detected": [],
@@ -175,6 +189,7 @@ async def start_workflow(request: StartWorkflowRequest):
         "human_checkpoint_pending": False,
         "checkpoint_type": None,
         "checkpoint_details": None,
+        "supervisor_guidance": None,  # AI-generated guidance for human reviewers
     }
 
     # Store workflow metadata
@@ -184,12 +199,13 @@ async def start_workflow(request: StartWorkflowRequest):
         "last_updated": timestamp,
         "thread_id": workflow_id,  # For LangGraph checkpointer
         "config": {"configurable": {"thread_id": workflow_id}},
+        "agent_specs": request.agent_specs,  # Store for reference
     }
 
     # Start workflow execution in a background thread
     thread = threading.Thread(
         target=execute_workflow_sync,
-        args=(workflow_id, initial_state),
+        args=(workflow_id, initial_state, request.agent_specs),
         daemon=True
     )
     thread.start()

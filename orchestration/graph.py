@@ -730,10 +730,15 @@ def route_after_pii_gate(state: OrchestratorState) -> str:
 # ============================================================================
 
 def build_orchestrator_graph() -> Any:
-    """Build the LangGraph orchestration workflow with autonomous supervisor nodes"""
+    """
+    Build the LangGraph orchestration workflow with autonomous supervisor nodes.
+
+    NOTE: Supports fixed agent order (profiler → quality → quality_gate → classifier → pii_gate → autoloader → pipeline_review).
+    For true dynamic agents, rebuild the graph per workflow in server.py with custom agent_specs.
+    """
     graph = StateGraph(OrchestratorState)
 
-    # Add nodes
+    # Add nodes - hardcoded flow with supervisors
     graph.add_node("profile", profile_node)
     graph.add_node("supervisor_after_profile", partial(supervisor_node, stage="after_profile"))
     graph.add_node("quality", quality_node)
@@ -770,6 +775,68 @@ def build_orchestrator_graph() -> Any:
     graph.add_edge("autoloader", "supervisor_after_autoloader")
     graph.add_edge("supervisor_after_autoloader", "pipeline_review")
     graph.add_edge("pipeline_review", "complete")
+    graph.add_edge("complete", END)
+
+    # Compile with memory checkpoint
+    return graph.compile(checkpointer=InMemorySaver())
+
+
+def build_custom_orchestrator_graph(agent_specs: List[Dict[str, str]]) -> Any:
+    """
+    Build a custom orchestration graph for any agent order.
+
+    Args:
+        agent_specs: List of agent specifications
+                    [{"name": "agent_name", "endpoint": "endpoint_name"}, ...]
+                    Example: [{"name": "custom_agent", "endpoint": "my_endpoint"}]
+
+    Returns:
+        Compiled LangGraph StateGraph supporting any agent
+    """
+    graph = StateGraph(OrchestratorState)
+
+    if not agent_specs or len(agent_specs) == 0:
+        raise ValueError("agent_specs cannot be empty")
+
+    agent_names = [spec["name"] for spec in agent_specs]
+
+    # Add generic agent nodes for each spec
+    for spec in agent_specs:
+        agent_name = spec["name"]
+        endpoint_name = spec.get("endpoint", agent_name)
+
+        # Add agent node
+        graph.add_node(
+            agent_name,
+            partial(generic_agent_node, endpoint_name=endpoint_name, agent_name=agent_name)
+        )
+
+        # Add supervisor node after each agent
+        graph.add_node(
+            f"supervisor_{agent_name}",
+            partial(supervisor_node, stage=f"after_{agent_name}")
+        )
+
+    # Add completion node
+    graph.add_node("complete", complete_node)
+
+    # Set entry point to first agent
+    graph.set_entry_point(agent_names[0])
+
+    # Connect agents with supervisors in sequence
+    for i, agent_name in enumerate(agent_names):
+        # Agent → Supervisor
+        graph.add_edge(agent_name, f"supervisor_{agent_name}")
+
+        # Supervisor → Next Agent or Complete
+        if i < len(agent_names) - 1:
+            next_agent = agent_names[i + 1]
+            graph.add_edge(f"supervisor_{agent_name}", next_agent)
+        else:
+            # Last agent supervisor → complete
+            graph.add_edge(f"supervisor_{agent_name}", "complete")
+
+    # End
     graph.add_edge("complete", END)
 
     # Compile with memory checkpoint
