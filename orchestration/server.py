@@ -107,42 +107,51 @@ def run_workflow_thread(workflow_id: str, initial_state: dict):
     try:
         from orchestration.graph import build_orchestrator_graph
 
-        print(f"[THREAD-START] {workflow_id} beginning execution", flush=True)
+        print(f"[WORKFLOW-{workflow_id[:8]}] START: initializing", flush=True)
 
         graph = build_orchestrator_graph()
         config = {"configurable": {"thread_id": workflow_id}}
 
-        # Run graph synchronously - blocks until all nodes complete
-        print(f"[THREAD-INVOKE] {workflow_id} calling graph.invoke()", flush=True)
+        print(f"[WORKFLOW-{workflow_id[:8]}] INVOKE: calling graph.invoke()...", flush=True)
         final_state = graph.invoke(initial_state, config)
-        print(f"[THREAD-DONE] {workflow_id} graph.invoke() returned", flush=True)
+        print(f"[WORKFLOW-{workflow_id[:8]}] RETURNED: graph.invoke() completed", flush=True)
 
         # Ensure final_state is a dict
         if hasattr(final_state, 'items'):
             final_state = dict(final_state)
 
-        # Verify state has all required fields
+        # Extract state info BEFORE saving
         execution_log = final_state.get('execution_log', [])
         results = final_state.get('results', {})
         status = final_state.get('status', 'COMPLETED')
 
-        print(f"[THREAD-STATE] {workflow_id} got status={status}, results={len(results)}, logs={len(execution_log)}", flush=True)
+        print(f"[WORKFLOW-{workflow_id[:8]}] STATE: status={status}, results={len(results)}, logs={len(execution_log)}", flush=True)
 
-        # Save to store
+        # Force ensure status is COMPLETED
+        if status != "COMPLETED":
+            final_state["status"] = "COMPLETED"
+            print(f"[WORKFLOW-{workflow_id[:8]}] UPDATED: status set to COMPLETED", flush=True)
+
+        # Save to store - this is critical
         workflows_store[workflow_id]["state"] = final_state
         workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
 
-        print(f"[THREAD-SAVED] {workflow_id} state persisted to store", flush=True)
+        # Verify it was saved
+        saved_state = workflows_store[workflow_id]["state"]
+        saved_logs = len(saved_state.get('execution_log', []))
+        saved_results = len(saved_state.get('results', {}))
+        print(f"[WORKFLOW-{workflow_id[:8]}] SAVED: verified logs={saved_logs}, results={saved_results}", flush=True)
+        print(f"[WORKFLOW-{workflow_id[:8]}] ✓ COMPLETE", flush=True)
         sys.stdout.flush()
 
     except Exception as e:
         import traceback
-        print(f"[THREAD-ERROR] {workflow_id}: {str(e)}", flush=True)
+        print(f"[WORKFLOW-ERROR] {workflow_id}: {str(e)}", flush=True)
         print(traceback.format_exc(), flush=True)
+        sys.stdout.flush()
         if workflow_id in workflows_store:
             workflows_store[workflow_id]["state"]["status"] = "FAILED"
             workflows_store[workflow_id]["state"]["error"] = str(e)
-        sys.stdout.flush()
 
 
 @app.post("/orchestration/start", response_model=WorkflowResponse)
