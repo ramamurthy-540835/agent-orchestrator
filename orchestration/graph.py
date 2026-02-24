@@ -34,7 +34,6 @@ class WorkflowState(TypedDict):
     supervisor_decisions: list
     status: str
     error: str
-    _workflows_store: dict  # Reference to workflows_store (for saving state)
 
 def now():
     return datetime.now(timezone.utc).isoformat()

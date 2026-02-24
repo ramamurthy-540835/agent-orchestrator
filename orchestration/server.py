@@ -12,6 +12,7 @@ import uuid
 import json
 import asyncio
 import threading
+import sys
 from datetime import datetime
 
 from .graph import (
@@ -102,49 +103,46 @@ class InterviewResponse(BaseModel):
 # ============================================================================
 
 def run_workflow_thread(workflow_id: str, initial_state: dict):
-    """Run workflow in a thread, saving state after each node completes"""
+    """Run workflow in background thread with proper state persistence"""
     try:
         from orchestration.graph import build_orchestrator_graph
-        import time
+
+        print(f"[THREAD-START] {workflow_id} beginning execution", flush=True)
 
         graph = build_orchestrator_graph()
         config = {"configurable": {"thread_id": workflow_id}}
 
-        print(f"[WORKFLOW] {workflow_id} starting...")
-
-        # Run the graph synchronously - all nodes execute in sequence
-        print(f"[WORKFLOW] {workflow_id} invoking graph.invoke()...")
+        # Run graph synchronously - blocks until all nodes complete
+        print(f"[THREAD-INVOKE] {workflow_id} calling graph.invoke()", flush=True)
         final_state = graph.invoke(initial_state, config)
+        print(f"[THREAD-DONE] {workflow_id} graph.invoke() returned", flush=True)
 
-        # Convert to dict and ensure it has all fields
+        # Ensure final_state is a dict
         if hasattr(final_state, 'items'):
             final_state = dict(final_state)
-        else:
-            final_state = final_state if isinstance(final_state, dict) else {}
 
-        # Debug: print what we got back
-        log_count = len(final_state.get('execution_log', []))
-        result_count = len(final_state.get('results', {}))
-        print(f"[WORKFLOW] {workflow_id} invoke() returned: status={final_state.get('status')}, results={result_count}, logs={log_count}")
-        print(f"[WORKFLOW] {workflow_id} final_state keys: {list(final_state.keys())}")
+        # Verify state has all required fields
+        execution_log = final_state.get('execution_log', [])
+        results = final_state.get('results', {})
+        status = final_state.get('status', 'COMPLETED')
 
-        # Set final status
-        final_state["status"] = final_state.get("status", "COMPLETED")
+        print(f"[THREAD-STATE] {workflow_id} got status={status}, results={len(results)}, logs={len(execution_log)}", flush=True)
 
-        # Save final state to store
+        # Save to store
         workflows_store[workflow_id]["state"] = final_state
         workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
 
-        print(f"[WORKFLOW] {workflow_id} COMPLETED - Saved state with {result_count} results and {log_count} logs")
+        print(f"[THREAD-SAVED] {workflow_id} state persisted to store", flush=True)
+        sys.stdout.flush()
 
     except Exception as e:
         import traceback
-        print(f"[WORKFLOW ERROR] {workflow_id}: {str(e)}")
-        print(traceback.format_exc())
+        print(f"[THREAD-ERROR] {workflow_id}: {str(e)}", flush=True)
+        print(traceback.format_exc(), flush=True)
         if workflow_id in workflows_store:
             workflows_store[workflow_id]["state"]["status"] = "FAILED"
             workflows_store[workflow_id]["state"]["error"] = str(e)
-            workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
+        sys.stdout.flush()
 
 
 @app.post("/orchestration/start", response_model=WorkflowResponse)
@@ -163,10 +161,9 @@ async def start_workflow(request: StartWorkflowRequest):
     elif request.agent_order:
         first_agent = request.agent_order[0]
 
-    # Initialize orchestration state
+    # Initialize orchestration state - MUST match WorkflowState TypedDict exactly
     initial_state: WorkflowState = {
         "workflow_id": workflow_id,
-        "user_id": request.user_id,
         "input_data": request.input_data,
         "agent_order": request.agent_order or ["profiler", "quality", "classifier", "autoloader"],
         "current_step": 0,
@@ -176,12 +173,9 @@ async def start_workflow(request: StartWorkflowRequest):
         "pii_detected": [],
         "human_decisions": [],
         "execution_log": [],
+        "supervisor_decisions": [],
         "status": "RUNNING",
         "error": None,
-        "human_checkpoint_pending": False,
-        "checkpoint_type": None,
-        "checkpoint_details": None,
-        "supervisor_guidance": None,  # AI-generated guidance for human reviewers
     }
 
     # Store workflow metadata

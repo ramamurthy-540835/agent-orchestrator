@@ -49,10 +49,10 @@
       ],
       "status": "active",
       "createdAt": "2026-02-24T10:00:00Z",
-      "updatedAt": "2026-02-24T20:12:03.648Z",
+      "updatedAt": "2026-02-24T20:13:38.621Z",
       "lastRun": {
-        "timestamp": "2026-02-24T20:12:03.648Z",
-        "workflow_id": "e67821e9-699f-4e95-9e4f-af2a3b6f17c6"
+        "timestamp": "2026-02-24T20:13:38.621Z",
+        "workflow_id": "c229123f-0372-43e5-b5d4-672ecead6920"
       }
     }
   ],
