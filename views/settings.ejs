@@ -55,9 +55,9 @@
         <% } else { %>
         <div class="agents-grid-clean">
             <% workspaces.forEach(ws => { %>
-            <div class="agent-card-clean" id="ws-<%= ws.id %>">
+            <div class="agent-card-clean" id="ws-<%= ws.id %>" data-ws-id="<%= ws.id %>" data-ws-name="<%= ws.name %>" data-ws-env="<%= ws.environment %>" data-ws-url="<%= ws.workspaceUrl %>">
                 <div class="agent-card-header">
-                    <span class="agent-icon-clean">&#x2601;</span>
+                    <span class="agent-icon-clean">☁️</span>
                     <span class="agent-badge-clean" style="<%= ws.environment === 'production' ? 'background: #ef4444; color: white; border-color: #ef4444;' : ws.environment === 'qa' ? 'background: #f59e0b; color: white; border-color: #f59e0b;' : ws.environment === 'staging' ? 'background: #8b5cf6; color: white; border-color: #8b5cf6;' : 'background: #3b82f6; color: white; border-color: #3b82f6;' %>"><%= ws.environment.toUpperCase() %></span>
                 </div>
                 <h4><%= ws.name %></h4>
@@ -65,7 +65,7 @@
                 <div class="agent-card-footer">
                     <button class="agent-try-now" onclick="testWorkspace('<%= ws.id %>')">Test Connection</button>
                     <span style="display: flex; gap: 8px;">
-                        <button class="agent-try-now" style="background: var(--gray-600);" onclick="openEditWorkspace('<%= ws.id %>', '<%= ws.name %>', '<%= ws.environment %>', '<%= ws.workspaceUrl %>')">Edit</button>
+                        <button class="agent-try-now" style="background: var(--gray-600);" onclick="openEditWorkspaceFromCard(this)">Edit</button>
                         <button style="background: none; border: none; cursor: pointer; color: #ef4444; font-size: 0.8rem; font-weight: 500;" onclick="deleteWorkspace('<%= ws.id %>')">Delete</button>
                     </span>
                 </div>
@@ -157,43 +157,69 @@ async function loadEndpointsForWorkspace() {
     }
     container.innerHTML = '<p style="color: var(--accent); font-size: 0.85rem;">Loading endpoints...</p>';
 
-    const res = await fetch('/api/workspaces/' + wsId + '/endpoints');
-    const data = await res.json();
+    try {
+        const res = await fetch('/api/workspaces/' + wsId + '/endpoints');
+        const data = await res.json();
 
-    if (data.error) {
-        container.innerHTML = '<p style="color: #ef4444; font-size: 0.85rem;">Error: ' + data.error + '</p>';
-        return;
-    }
-    if (data.endpoints.length === 0) {
-        container.innerHTML = '<p style="color: var(--gray-500); font-size: 0.85rem;">No serving endpoints found.</p>';
-        return;
-    }
-    container.innerHTML = '<div class="agents-grid-clean">' + data.endpoints.map(ep => {
-        const isReady = ep.state === 'READY';
-        const label = isReady ? 'READY' : 'STOPPED';
-        const badgeStyle = isReady
-            ? 'background: #22c55e; color: white; border-color: #22c55e;'
-            : 'background: var(--gray-100); color: var(--gray-600);';
-        return `
+        if (!data) {
+            container.innerHTML = '<p style="color: #ef4444; font-size: 0.85rem;">Error: Invalid response from server</p>';
+            return;
+        }
+
+        if (data.error) {
+            container.innerHTML = '<p style="color: #ef4444; font-size: 0.85rem;">Error: ' + (data.error || 'Unknown error') + '</p>';
+            return;
+        }
+
+        if (!data.endpoints || !Array.isArray(data.endpoints) || data.endpoints.length === 0) {
+            container.innerHTML = '<p style="color: var(--gray-500); font-size: 0.85rem;">No serving endpoints found.</p>';
+            return;
+        }
+
+        let html = '<div class="agents-grid-clean">';
+        data.endpoints.forEach(ep => {
+            const isReady = ep && ep.state === 'READY';
+            const label = isReady ? 'READY' : 'STOPPED';
+            const badgeStyle = isReady
+                ? 'background: #22c55e; color: white; border-color: #22c55e;'
+                : 'background: var(--gray-100); color: var(--gray-600);';
+            const epName = (ep && ep.name) ? ep.name : 'Unknown';
+            const epCreator = (ep && ep.creator) ? ' by ' + ep.creator : '';
+            html += `
         <div class="agent-card-clean">
             <div class="agent-card-header">
-                <span class="agent-icon-clean">&#x1f916;</span>
+                <span class="agent-icon-clean">🤖</span>
                 <span class="agent-badge-clean" style="${badgeStyle}">${label}</span>
             </div>
-            <h4>${ep.name}</h4>
-            <p>Serving endpoint${ep.creator ? ' by ' + ep.creator : ''}</p>
+            <h4>${epName}</h4>
+            <p>Serving endpoint${epCreator}</p>
         </div>`;
-    }).join('') + '</div>';
+        });
+        html += '</div>';
+        container.innerHTML = html;
+    } catch (err) {
+        console.error('[ENDPOINTS] Error:', err);
+        container.innerHTML = '<p style="color: #ef4444; font-size: 0.85rem;">Error loading endpoints: ' + err.message + '</p>';
+    }
 }
 
 // Edit workspace
 let editingWsId = null;
 
+function openEditWorkspaceFromCard(btn) {
+    const card = btn.closest('.agent-card-clean');
+    const id = card.dataset.wsId;
+    const name = card.dataset.wsName;
+    const env = card.dataset.wsEnv;
+    const url = card.dataset.wsUrl;
+    openEditWorkspace(id, name, env, url);
+}
+
 function openEditWorkspace(id, name, env, url) {
     editingWsId = id;
-    document.getElementById('editWsName').value = name;
-    document.getElementById('editWsEnv').value = env;
-    document.getElementById('editWsUrl').value = url;
+    document.getElementById('editWsName').value = name || '';
+    document.getElementById('editWsEnv').value = env || 'dev';
+    document.getElementById('editWsUrl').value = url || '';
     document.getElementById('editWsToken').value = '';
     document.getElementById('editWsToken').placeholder = '(leave blank to keep current token)';
     document.getElementById('editWsMsg').textContent = '';
