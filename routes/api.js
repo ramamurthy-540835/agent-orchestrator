@@ -311,14 +311,36 @@ router.get('/workspaces/:id/endpoints', async (req, res) => {
     if (!ws) return res.json({ endpoints: [], error: 'Workspace not found' });
     try {
         const data = await databricksRequest(ws, 'GET', '/api/2.0/serving-endpoints');
-        const endpoints = (data.endpoints || []).filter(ep => !ep.name.startsWith('databricks-')).map(ep => ({
-            name: ep.name,
-            state: ep.state?.ready || 'UNKNOWN',
-            creator: ep.creator,
-            creation_timestamp: ep.creation_timestamp
-        })).sort((a, b) => (a.state === 'READY' ? 0 : 1) - (b.state === 'READY' ? 0 : 1));
+        const endpoints = (data.endpoints || [])
+            .filter(ep => !ep.name.startsWith('databricks-'))
+            .map(ep => {
+                // Handle various state field formats from Databricks API
+                let state = 'UNKNOWN';
+                if (ep.state) {
+                    if (typeof ep.state === 'string') {
+                        state = ep.state; // Direct string: "READY", "NOT_READY", etc
+                    } else if (ep.state.ready === true) {
+                        state = 'READY';
+                    } else if (ep.state.ready === false) {
+                        state = 'STOPPED';
+                    }
+                }
+                return {
+                    name: ep.name,
+                    state: state,
+                    creator: ep.creator_user_name || ep.creator,
+                    creation_timestamp: ep.creation_timestamp
+                };
+            })
+            .sort((a, b) => {
+                // Sort: READY first, then others alphabetically
+                if (a.state === 'READY' && b.state !== 'READY') return -1;
+                if (a.state !== 'READY' && b.state === 'READY') return 1;
+                return (a.name || '').localeCompare(b.name || '');
+            });
         res.json({ endpoints });
     } catch (err) {
+        console.error('[ENDPOINTS] Error:', err.message);
         res.json({ endpoints: [], error: err.message });
     }
 });
@@ -332,17 +354,139 @@ router.get('/endpoints', async (req, res) => {
     }
     try {
         const data = await databricksRequest(config, 'GET', '/api/2.0/serving-endpoints');
-        const endpoints = (data.endpoints || []).filter(ep => !ep.name.startsWith('databricks-')).map(ep => ({
-            name: ep.name,
-            state: ep.state?.ready || 'UNKNOWN',
-            creator: ep.creator,
-            creation_timestamp: ep.creation_timestamp
-        })).sort((a, b) => (a.state === 'READY' ? 0 : 1) - (b.state === 'READY' ? 0 : 1));
+        const endpoints = (data.endpoints || [])
+            .filter(ep => !ep.name.startsWith('databricks-'))
+            .map(ep => {
+                // Handle various state field formats from Databricks API
+                let state = 'UNKNOWN';
+                if (ep.state) {
+                    if (typeof ep.state === 'string') {
+                        state = ep.state;
+                    } else if (ep.state.ready === true) {
+                        state = 'READY';
+                    } else if (ep.state.ready === false) {
+                        state = 'STOPPED';
+                    }
+                }
+                return {
+                    name: ep.name,
+                    state: state,
+                    creator: ep.creator_user_name || ep.creator,
+                    creation_timestamp: ep.creation_timestamp
+                };
+            })
+            .sort((a, b) => {
+                if (a.state === 'READY' && b.state !== 'READY') return -1;
+                if (a.state !== 'READY' && b.state === 'READY') return 1;
+                return (a.name || '').localeCompare(b.name || '');
+            });
         res.json({ endpoints });
     } catch (err) {
+        console.error('[ENDPOINTS] Error:', err.message);
         res.json({ endpoints: [], error: err.message });
     }
 });
+
+// ─── Agent Inventory: Real + Mock agents ───
+router.get('/agents/inventory', async (req, res) => {
+    try {
+        const workspaces = store.getAllWorkspaces();
+        const config = workspaces.length > 0 ? workspaces[0] : store.getConfig();
+
+        // Real agents from Databricks
+        let realAgents = [];
+        if (config.workspaceUrl && config.token) {
+            try {
+                const data = await databricksRequest(config, 'GET', '/api/2.0/serving-endpoints');
+                realAgents = (data.endpoints || [])
+                    .filter(ep => !ep.name.startsWith('databricks-'))
+                    .map(ep => {
+                        // Handle various state field formats
+                        let state = 'UNKNOWN';
+                        if (ep.state) {
+                            if (typeof ep.state === 'string') {
+                                state = ep.state;
+                            } else if (ep.state.ready === true) {
+                                state = 'READY';
+                            } else if (ep.state.ready === false) {
+                                state = 'STOPPED';
+                            }
+                        }
+                        return {
+                            name: ep.name,
+                            display_name: ep.name.replace(/_endpoint$/, '').replace(/_/g, ' ').toUpperCase(),
+                            state: state,
+                            source: 'DATABRICKS',
+                            icon: '🤖',
+                            type: 'Real Agent',
+                            category: categorizeAgent(ep.name)
+                        };
+                    });
+            } catch (e) {
+                console.log('[INVENTORY] Failed to fetch real agents:', e.message);
+            }
+        }
+
+        // Mock agents from orchestration service
+        let mockAgents = [];
+        try {
+            const mockResp = await fetch('http://localhost:8001/mock-agents');
+            if (mockResp.ok) {
+                const mockData = await mockResp.json();
+                mockAgents = (mockData.agents || []).map(agent => ({
+                    name: agent.name,
+                    display_name: agent.display_name,
+                    state: 'READY',
+                    source: 'MOCK',
+                    icon: agent.icon || '🔄',
+                    type: 'Mock Agent',
+                    category: agent.category
+                }));
+            }
+        } catch (e) {
+            console.log('[INVENTORY] Failed to fetch mock agents:', e.message);
+        }
+
+        // Combine and sort: Real READY first, then Mock, then Stopped
+        const all = [...realAgents, ...mockAgents];
+        const sorted = all.sort((a, b) => {
+            // Sort by: source (Real > Mock) -> state (READY > others) -> name
+            if (a.source !== b.source) {
+                return a.source === 'DATABRICKS' ? -1 : 1;
+            }
+            if (a.state !== b.state) {
+                return a.state === 'READY' ? -1 : 1;
+            }
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        res.json({
+            agents: sorted,
+            summary: {
+                total: sorted.length,
+                real_ready: realAgents.filter(a => a.state === 'READY').length,
+                real_stopped: realAgents.filter(a => a.state !== 'READY').length,
+                mock: mockAgents.length
+            }
+        });
+    } catch (err) {
+        res.status(500).json({
+            error: err.message,
+            agents: [],
+            summary: { total: 0, real_ready: 0, real_stopped: 0, mock: 0 }
+        });
+    }
+});
+
+// Helper function to categorize agents
+function categorizeAgent(agentName) {
+    const name = agentName.toLowerCase();
+    if (name.includes('profile')) return 'Profiling';
+    if (name.includes('quality')) return 'Quality';
+    if (name.includes('classify')) return 'Classification';
+    if (name.includes('autoload')) return 'Loading';
+    return 'Other';
+}
 
 // ─── Solutions CRUD ───
 router.get('/solutions', (req, res) => {
