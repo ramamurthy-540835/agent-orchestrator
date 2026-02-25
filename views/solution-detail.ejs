@@ -1045,29 +1045,36 @@ function showHumanCheckpointModal(state) {
     document.body.appendChild(modal);
 }
 
-// Submit checkpoint decision
+// Submit checkpoint decision and resume workflow
 async function submitCheckpointDecision(decision, workflowId, modal) {
     try {
-        const res = await fetch(`/api/orchestration/${workflowId}/decision`, {
+        const res = await fetch(`/api/orchestration/${workflowId}/resume`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ decision })
+            body: JSON.stringify({ decision: decision })
         });
 
         if (res.ok) {
+            const data = await res.json();
             modal.remove();
             modalOpen = false;
-            checkpointModalOpen = false;  // Mark modal as closed
-            // Don't reset lastCheckpointId - keep it so we don't show the same checkpoint again
+            checkpointModalOpen = false;
+            lastCheckpointId = null;  // Reset to allow new checkpoints
+
+            console.log(`[CHECKPOINT] Decision: ${decision}, Status: ${data.status}`);
+
             // Resume polling after a brief delay
             setTimeout(() => fetchAndUpdateLogs(workflowId), 500);
         } else {
             alert('Failed to submit decision');
+            modal.remove();
             modalOpen = false;
             checkpointModalOpen = false;
         }
     } catch (err) {
+        console.error('Checkpoint decision error:', err);
         alert('Error: ' + err.message);
+        modal.remove();
         modalOpen = false;
         checkpointModalOpen = false;
     }

@@ -127,7 +127,7 @@ class DataQualityAgent(MockAgent):
         )
 
     def process(self, input_data, context=None):
-        time.sleep(random.uniform(5, 7))  # 6 seconds for visibility
+        time.sleep(6)  # 6 seconds for visibility
         headers, rows = self.parse_csv(input_data)
         total = len(rows)
 
@@ -138,34 +138,48 @@ class DataQualityAgent(MockAgent):
             # Check email format
             email = row_dict.get('email', '')
             if email and not re.match(r'^[^@]+@[^@]+\.[^@]+$', email):
-                issues.append(f"Row {i+1}: Invalid email '{email}'")
+                issues.append(f"Row {i+2}: Invalid email '{email}'")
 
-            # Check empty required-looking fields
-            for h in ['customer_id', 'name', 'first_name', 'id']:
+            # Check missing required fields
+            for h in ['first_name', 'last_name', 'email']:
                 if h in row_dict and not row_dict[h].strip():
-                    issues.append(f"Row {i+1}: Missing required field '{h}'")
+                    issues.append(f"Row {i+2}: Missing '{h}'")
+
+            # Check for future dates (data quality issue)
+            dob = row_dict.get('date_of_birth', '')
+            if dob and ('2028' in dob or '2030' in dob or '2025' in dob):
+                issues.append(f"Row {i+2}: Future date_of_birth '{dob}'")
+
+            # Check for negative loyalty points
+            lp = row_dict.get('loyalty_points', '0')
+            try:
+                if int(lp) < 0:
+                    issues.append(f"Row {i+2}: Negative loyalty_points '{lp}'")
+            except:
+                pass
 
         failed = len(set(i.split(':')[0] for i in issues))
         passed = total - failed
         score = round(passed/total*100, 1) if total else 0
-        # Force score below 80 to trigger human checkpoint for demo
-        score = min(score, 65) if score > 10 else score
+        # Cap score at 65 to trigger quality checkpoint
+        score = min(score, 65.0) if total > 0 else 0
 
-        output = f"""# ✅ Data Quality Report
-**Score: {score}%** {'✅ Acceptable (>80%)' if score >= 80 else '⚠️ Below Threshold (<80%)'}
+        output = f"""# ✅ Data Quality Validation Report
+**Overall Quality Score: {score}%**
+**Status:** {'✅ Acceptable (≥80%)' if score >= 80 else '⚠️ Below Threshold (requires human review)'}
 
 ## Summary
 - Total Records: {total}
-- Passed: {passed} ✅
-- Failed: {failed} ❌
+- Passed: {passed} ✅ ({round(passed/total*100) if total else 0}%)
+- Failed: {failed} ❌ ({round(failed/total*100) if total else 0}%)
 
 ## Issues Found ({len(issues)})
 """
-        for issue in issues[:20]:
-            output += f"- {issue}\n"
+        for issue in issues[:15]:
+            output += f"- ❌ {issue}\n"
 
-        if len(issues) > 20:
-            output += f"- ... and {len(issues)-20} more issues\n"
+        if len(issues) > 15:
+            output += f"- ... and {len(issues)-15} more issues\n"
 
         return {
             "output": output,
@@ -218,6 +232,15 @@ class DataClassifierAgent(MockAgent):
 
             classifications.append({"column": h, "category": cat, "risk": risk})
 
+        # Ensure restricted PII is detected for demo (SSN and credit cards)
+        pii_detected = list(set(pii_detected))  # deduplicate
+        for h in headers:
+            h_lower = h.lower()
+            if 'ssn' in h_lower and h not in pii_detected:
+                pii_detected.append(h)
+            if 'credit' in h_lower and h not in pii_detected:
+                pii_detected.append(h)
+
         output = f"""# 🔒 Data Classification Report
 **Columns Analyzed:** {len(headers)}
 
@@ -236,12 +259,13 @@ class DataClassifierAgent(MockAgent):
             output += f"| {c['column']} | {emoji} {c['category']} | {c['risk']} |\n"
 
         if pii_detected:
-            output += f"\n⚠️ **PII detected in:** {', '.join(pii_detected)}\n"
+            output += f"\n🔒 **Restricted PII detected in:** {', '.join(pii_detected)}\n"
+            output += "**Recommendation:** Apply AES-256 encryption before loading to production.\n"
 
         return {
             "output": output,
             "pii_detected": pii_detected,
-            "duration_ms": random.randint(2000, 4000),
+            "duration_ms": int(6000 + random.uniform(0, 2000)),
             "source": "MOCK"
         }
 

@@ -368,37 +368,16 @@ def supervisor_quality_node(state: WorkflowState) -> dict:
     decisions = list(state.get("supervisor_decisions", []))
     score = state.get("quality_score", 50)
 
-    # Check if quality score is below threshold - trigger human checkpoint
-    if score < 80:
-        analysis = f"⚠️ Quality score {score}% is below 80% threshold. Human review required."
-        log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
-            "message": analysis,
-            "confidence": 75,
-            "quality_score": score
-        }))
-        log.append(log_entry(state, "HUMAN_CHECKPOINT", "quality_gate", {
-            "message": f"Quality checkpoint: score {score}% below threshold. Require human approval to proceed.",
-            "question": f"Quality score is {score}%. Do you want to proceed with data classification anyway?",
-            "options": ["approve", "fix", "abort"]
-        }))
-        entry = {"step": "after_quality", "analysis": analysis, "confidence": 75, "decision": "PAUSED", "quality_score": score}
-        decisions.append(entry)
-        return {
-            "execution_log": log,
-            "supervisor_decisions": decisions,
-            "status": "PAUSED",
-            "checkpoint_pending": True,
-            "checkpoint_type": "QUALITY_GATE",
-            "supervisor_guidance": f"Quality score {score}% below 80% threshold. Review recommended before proceeding to classification.",
-            "current_agent": "quality_gate"
-        }
-    else:
-        analysis = f"✅ Quality score {score}% meets threshold. Auto-approving for classification."
-        decision = "AUTO_APPROVE"
+    if score >= 80:
+        analysis = f"✅ Quality score {score}% exceeds threshold. Auto-approving for classification."
         confidence = 95
+        decision = "AUTO_APPROVE"
+    else:
+        analysis = f"⚠️ Quality score {score}% is below 80% threshold. Human review required before proceeding."
+        confidence = 75
+        decision = "ESCALATE"
 
-    entry = {"step": "after_quality", "analysis": analysis, "confidence": confidence, "decision": decision, "quality_score": score}
-    decisions.append(entry)
+    decisions.append({"step": "after_quality", "analysis": analysis, "confidence": confidence, "decision": decision})
 
     log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
         "message": f"🧠 {analysis} [Confidence: {confidence}%]",
@@ -406,12 +385,31 @@ def supervisor_quality_node(state: WorkflowState) -> dict:
         "decision": decision
     }))
 
-    log.append(log_entry(state, "ROUTING_DECISION", "quality_gate", {
-        "message": f"🔀 Quality gate: score={score}%, decision={decision}",
-        "quality_score": score
-    }))
-
-    return {"execution_log": log, "supervisor_decisions": decisions, "current_agent": "classifier"}
+    if score < 80:
+        # PAUSE for human intervention
+        log.append(log_entry(state, "HUMAN_CHECKPOINT", "quality_gate", {
+            "message": f"⚠️ Quality score {score}% below threshold. Awaiting human decision.",
+            "question": f"Data quality score is {score}%. Multiple records failed validation (invalid emails, future dates, negative values). Proceed to PII classification?",
+            "options": ["approve", "fix_retry", "abort"]
+        }))
+        return {
+            "execution_log": log,
+            "supervisor_decisions": decisions,
+            "status": "PAUSED",
+            "checkpoint_pending": True,
+            "checkpoint_type": "QUALITY_GATE",
+            "supervisor_guidance": f"Quality score {score}% is below the 80% acceptance threshold. Multiple records failed validation including invalid emails, future dates, and negative values. Review the quality report and decide whether to proceed to PII classification or retry with cleaner data. Confidence: {confidence}%",
+            "current_agent": "quality_gate"
+        }
+    else:
+        log.append(log_entry(state, "ROUTING_DECISION", "quality_gate", {
+            "message": f"✅ Quality score {score}% ≥ 80%. Auto-approved. Proceeding to classifier."
+        }))
+        return {
+            "execution_log": log,
+            "supervisor_decisions": decisions,
+            "current_agent": "classifier"
+        }
 
 def classify_node(state: WorkflowState) -> dict:
     print(f"[NODE] classify_node starting")
@@ -480,44 +478,49 @@ def supervisor_classify_node(state: WorkflowState) -> dict:
     pii = state.get("pii_detected", [])
 
     # Check for restricted PII that requires human confirmation
-    restricted_pii = [p for p in pii if p in ['ssn', 'credit_card', 'credit', 'social_security', 'social security']]
+    restricted = [p for p in pii if any(kw in p.lower() for kw in ['ssn', 'credit_card', 'credit', 'social_security'])]
 
-    if restricted_pii:
-        analysis = f"🔒 Restricted PII detected: {', '.join(restricted_pii)}. Human confirmation required before autoload."
-        log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
-            "message": analysis,
-            "confidence": 85,
-            "pii_detected": pii
-        }))
+    if restricted:
+        analysis = f"🔒 Restricted PII detected: {', '.join(restricted)}. Human confirmation required for compliance."
+        confidence = 85
+        decision = "ESCALATE"
+    else:
+        analysis = "✅ No restricted PII detected. Safe to proceed to autoloader."
+        confidence = 95
+        decision = "PROCEED"
+
+    decisions.append({"step": "after_classify", "analysis": analysis, "confidence": confidence, "pii": pii})
+
+    log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
+        "message": f"🧠 {analysis} [Confidence: {confidence}%]",
+        "confidence": confidence,
+        "decision": decision
+    }))
+
+    if restricted:
         log.append(log_entry(state, "HUMAN_CHECKPOINT", "pii_gate", {
-            "message": f"PII checkpoint: Restricted PII ({', '.join(restricted_pii)}) detected. Encryption required.",
-            "question": f"Restricted PII found: {', '.join(restricted_pii)}. Proceed with encryption, or abort?",
+            "message": f"🔒 Restricted PII: {', '.join(restricted)}. Encryption required. Awaiting human confirmation.",
+            "question": f"Columns with restricted PII: {', '.join(restricted)}. Apply AES-256 encryption and proceed to auto-loader?",
             "options": ["approve_encrypt", "abort"]
         }))
-        entry = {"step": "after_classify", "analysis": analysis, "confidence": 85, "decision": "PAUSED", "pii": pii}
-        decisions.append(entry)
         return {
             "execution_log": log,
             "supervisor_decisions": decisions,
             "status": "PAUSED",
             "checkpoint_pending": True,
             "checkpoint_type": "PII_GATE",
-            "supervisor_guidance": f"Restricted PII ({', '.join(restricted_pii)}) detected. Encryption recommended before loading. Confidence: 85%",
+            "supervisor_guidance": f"Restricted PII detected in columns: {', '.join(restricted)}. PCI-DSS and GDPR compliance require encryption before data loading. Recommend AES-256 encryption for SSN and credit card fields. Proceed with encryption enabled? Confidence: {confidence}%",
             "current_agent": "pii_gate"
         }
     else:
-        analysis = "✅ No restricted PII detected. Safe to proceed to autoloader."
-        confidence = 95
-
-    entry = {"step": "after_classify", "analysis": analysis, "confidence": confidence, "pii": pii}
-    decisions.append(entry)
-
-    log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
-        "message": f"🧠 {analysis} [Confidence: {confidence}%]",
-        "pii_detected": pii
-    }))
-
-    return {"execution_log": log, "supervisor_decisions": decisions, "current_agent": "autoloader"}
+        log.append(log_entry(state, "ROUTING_DECISION", "pii_gate", {
+            "message": "✅ No restricted PII. Proceeding to autoloader."
+        }))
+        return {
+            "execution_log": log,
+            "supervisor_decisions": decisions,
+            "current_agent": "autoloader"
+        }
 
 def autoloader_node(state: WorkflowState) -> dict:
     print(f"[NODE] autoloader_node starting")

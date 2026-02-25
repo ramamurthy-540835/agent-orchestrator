@@ -4,7 +4,7 @@ Provides HTTP endpoints for the Express frontend to call.
 Runs on port 8001.
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
@@ -13,7 +13,9 @@ import json
 import asyncio
 import threading
 import sys
+import time
 from datetime import datetime
+from datetime import timezone
 
 from .graph import (
     orchestrator, WorkflowState,
@@ -111,13 +113,14 @@ class InterviewResponse(BaseModel):
 # ============================================================================
 
 def run_workflow_thread(workflow_id: str, initial_state: dict):
-    """Run workflow in background thread with real-time state updates.
+    """Run workflow in background thread with human checkpoint support.
 
     Uses graph.stream() with stream_mode="values" to get full state snapshots
-    after each node, updating the workflows_store in real-time so the UI sees
-    live progress instead of waiting for the entire workflow to complete.
+    after each node. When status=PAUSED (human checkpoint), waits for user decision
+    before resuming the graph.
     """
     try:
+        from orchestration.graph import get_orchestrator
         graph = get_orchestrator()
         config = {"configurable": {"thread_id": workflow_id}}
 
@@ -127,39 +130,96 @@ def run_workflow_thread(workflow_id: str, initial_state: dict):
         # Save initial state
         workflows_store[workflow_id]["state"] = dict(initial_state)
         workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
-        print(f"[WF-{workflow_id[:8]}] INIT", flush=True)
-        sys.stdout.flush()
 
-        # Use stream with mode="values" to get full state after each node
-        # This enables real-time UI updates
+        current_state = dict(initial_state)
         node_count = 0
-        for state_snapshot in graph.stream(initial_state, config, stream_mode="values"):
+
+        # Stream workflow nodes
+        for state_snapshot in graph.stream(current_state, config, stream_mode="values"):
             if isinstance(state_snapshot, dict):
                 node_count += 1
-                # Update store in real-time after each node
-                workflows_store[workflow_id]["state"] = dict(state_snapshot)
+                current_state = state_snapshot
+                workflows_store[workflow_id]["state"] = dict(current_state)
                 workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
 
-                # Log progress
-                agent = state_snapshot.get("current_agent", "?")
-                logs = len(state_snapshot.get("execution_log", []))
-                results = len(state_snapshot.get("results", {}))
-                status = state_snapshot.get("status", "RUNNING")
+                agent = current_state.get("current_agent", "?")
+                logs = len(current_state.get("execution_log", []))
+                results = len(current_state.get("results", {}))
+                status = current_state.get("status", "RUNNING")
+
                 print(f"[WF-{workflow_id[:8]}] STREAM[{node_count}]: agent={agent} status={status} logs={logs} results={results}", flush=True)
                 sys.stdout.flush()
 
-        # Ensure final status is COMPLETED
+                # Check if paused for human decision
+                if status == "PAUSED" and current_state.get("checkpoint_pending"):
+                    print(f"[WF-{workflow_id[:8]}] PAUSED: Awaiting human decision on {current_state.get('checkpoint_type')}", flush=True)
+
+                    # Wait for human decision (poll every 2 seconds, max 30 minutes)
+                    wait_count = 0
+                    while workflows_store[workflow_id]["state"].get("checkpoint_pending", False) and wait_count < 900:  # 30 min max
+                        time.sleep(2)
+                        wait_count += 1
+
+                        # Check if status changed
+                        current_stored = workflows_store[workflow_id]["state"]
+                        if current_stored.get("status") in ["RUNNING", "ABORTED"]:
+                            break
+
+                    # Check final decision
+                    final_state = workflows_store[workflow_id]["state"]
+                    if final_state.get("status") == "ABORTED":
+                        print(f"[WF-{workflow_id[:8]}] ABORTED by human", flush=True)
+                        break
+
+                    # Resume: get updated state from store
+                    current_state = dict(final_state)
+                    checkpoint_type = current_state.get("checkpoint_type", "")
+                    next_agent = current_state.get("current_agent", "?")
+
+                    print(f"[WF-{workflow_id[:8]}] RESUMED: continuing from {next_agent}", flush=True)
+
+                    # Continue streaming from updated state
+                    resume_config = {"configurable": {"thread_id": workflow_id + "-resume-" + str(node_count)}}
+                    for next_snapshot in graph.stream(current_state, resume_config, stream_mode="values"):
+                        if isinstance(next_snapshot, dict):
+                            node_count += 1
+                            current_state = next_snapshot
+                            workflows_store[workflow_id]["state"] = dict(current_state)
+                            workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
+
+                            agent = current_state.get("current_agent", "?")
+                            status = current_state.get("status", "RUNNING")
+                            print(f"[WF-{workflow_id[:8]}] STREAM[{node_count}]: agent={agent} status={status}", flush=True)
+
+                            # Check for another checkpoint
+                            if status == "PAUSED" and current_state.get("checkpoint_pending"):
+                                print(f"[WF-{workflow_id[:8]}] PAUSED again: {current_state.get('checkpoint_type')}", flush=True)
+                                wait_count = 0
+                                while workflows_store[workflow_id]["state"].get("checkpoint_pending", False) and wait_count < 900:
+                                    time.sleep(2)
+                                    wait_count += 1
+                                    if workflows_store[workflow_id]["state"].get("status") in ["RUNNING", "ABORTED"]:
+                                        break
+
+                                if workflows_store[workflow_id]["state"].get("status") == "ABORTED":
+                                    print(f"[WF-{workflow_id[:8]}] ABORTED by human", flush=True)
+                                    break
+
+                                current_state = dict(workflows_store[workflow_id]["state"])
+                                # Continue to handle more checkpoints...
+                                break  # Exit inner loop to continue outer stream
+
+        # Ensure final status is COMPLETED (if not already ABORTED)
         final = workflows_store[workflow_id]["state"]
-        if final.get("status") != "COMPLETED":
+        if final.get("status") not in ["COMPLETED", "ABORTED"]:
             final["status"] = "COMPLETED"
 
         workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
 
-        # Verify final state
-        final = workflows_store[workflow_id]["state"]
         logs = len(final.get("execution_log", []))
         results = len(final.get("results", {}))
-        print(f"[WF-{workflow_id[:8]}] DONE: logs={logs} results={results}", flush=True)
+        status = final.get("status", "UNKNOWN")
+        print(f"[WF-{workflow_id[:8]}] DONE: status={status} logs={logs} results={results}", flush=True)
         print(f"[WF-{workflow_id[:8]}] ✓ OK", flush=True)
         sys.stdout.flush()
 
@@ -271,6 +331,58 @@ async def get_workflow(workflow_id: str):
         "created_at": workflow["created_at"],
         "last_updated": workflow["last_updated"],
     }
+
+
+@app.post("/orchestration/{workflow_id}/resume")
+async def resume_workflow(workflow_id: str, body: dict = Body(...)):
+    """Resume a paused workflow after human decision."""
+    if workflow_id not in workflows_store:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    decision = body.get("decision", "approve")
+    state = workflows_store[workflow_id]["state"]
+
+    # Log the human decision
+    log = list(state.get("execution_log", []))
+    log.append({
+        "id": str(uuid.uuid4())[:8],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event_type": "HUMAN_DECISION",
+        "agent": "human",
+        "step": state.get("current_step", 0),
+        "details": {"message": f"👤 Human decided: {decision.upper()}", "decision": decision}
+    })
+    state["execution_log"] = log
+
+    human_decisions = list(state.get("human_decisions", []))
+    human_decisions.append({"decision": decision, "timestamp": datetime.now(timezone.utc).isoformat()})
+    state["human_decisions"] = human_decisions
+
+    if decision == "abort":
+        state["status"] = "ABORTED"
+        state["checkpoint_pending"] = False
+        log.append({
+            "id": str(uuid.uuid4())[:8],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_type": "WORKFLOW_COMPLETE",
+            "agent": "orchestrator",
+            "step": state.get("current_step", 0),
+            "details": {"message": "🛑 Pipeline aborted by human decision."}
+        })
+        state["execution_log"] = log
+    else:
+        # Resume workflow
+        checkpoint_type = state.get("checkpoint_type", "")
+        if checkpoint_type == "QUALITY_GATE":
+            state["current_agent"] = "classifier"
+        elif checkpoint_type == "PII_GATE":
+            state["current_agent"] = "autoloader"
+
+        state["status"] = "RUNNING"
+        state["checkpoint_pending"] = False
+
+    workflows_store[workflow_id]["state"] = state
+    return {"status": state["status"], "decision": decision}
 
 
 @app.post("/orchestration/{workflow_id}/decision")

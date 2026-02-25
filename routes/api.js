@@ -214,6 +214,21 @@ router.post('/orchestration/:workflowId/decision', async (req, res) => {
     }
 });
 
+// Resume workflow after human checkpoint
+router.post('/orchestration/:workflowId/resume', async (req, res) => {
+    try {
+        const response = await fetch(`${ORCHESTRATION_SERVICE_URL}/orchestration/${req.params.workflowId}/resume`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body)
+        });
+        const data = await response.json();
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ error: `Failed to resume workflow: ${err.message}` });
+    }
+});
+
 router.post('/interview/start', async (req, res) => {
     try {
         const response = await fetch(`${ORCHESTRATION_SERVICE_URL}/interview/start`, {
