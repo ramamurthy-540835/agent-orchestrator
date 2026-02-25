@@ -1686,11 +1686,22 @@ async function showAgentInventory() {
         const realAgents = data.agents.filter(a => a.source === 'DATABRICKS');
         const mockAgents = data.agents.filter(a => a.source === 'MOCK');
 
-        let html = '';
+        // Create tabs
+        let html = `
+        <div style="display:flex;gap:8px;margin-bottom:16px;border-bottom:2px solid #E5E7EB;">
+            <button onclick="switchAgentTab('production')" id="tab-production"
+                    style="padding:8px 16px;border:none;background:none;cursor:pointer;font-weight:600;color:#3B82F6;border-bottom:3px solid #3B82F6;font-size:13px;">
+                🔴 PRODUCTION (${realAgents.length})
+            </button>
+            <button onclick="switchAgentTab('mock')" id="tab-mock"
+                    style="padding:8px 16px;border:none;background:none;cursor:pointer;font-weight:600;color:#9CA3AF;border-bottom:3px solid transparent;font-size:13px;">
+                🔵 MOCK (${mockAgents.length})
+            </button>
+        </div>`;
 
-        // Real agents section
+        // Production tab content
+        html += `<div id="tab-content-production" style="display:block;">`;
         if (realAgents.length > 0) {
-            html += '<h4 style="margin-top:0;margin-bottom:8px;font-size:12px;font-weight:600;color:#1F2937;">🔴 DATABRICKS ENDPOINTS</h4>';
             html += realAgents.map(agent => `
                 <div style="background:${agent.state === 'READY' ? '#F0FDF4' : '#FEF2F2'};border:1px solid ${agent.state === 'READY' ? '#D1FAE5' : '#FEE2E2'};border-radius:6px;padding:8px;margin-bottom:6px;">
                     <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
@@ -1705,11 +1716,14 @@ async function showAgentInventory() {
                     </div>
                 </div>
             `).join('');
+        } else {
+            html += '<p style="color:#9CA3AF;text-align:center;padding:20px;">No Databricks endpoints available</p>';
         }
+        html += `</div>`;
 
-        // Mock agents section
+        // Mock tab content
+        html += `<div id="tab-content-mock" style="display:none;">`;
         if (mockAgents.length > 0) {
-            html += '<h4 style="margin-top:12px;margin-bottom:8px;font-size:12px;font-weight:600;color:#1F2937;">🔵 MOCK AGENTS (For Testing)</h4>';
             html += mockAgents.map(agent => `
                 <div style="background:#F0F9FF;border:1px solid #BAE6FD;border-radius:6px;padding:8px;margin-bottom:6px;">
                     <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
@@ -1725,7 +1739,10 @@ async function showAgentInventory() {
                     </div>
                 </div>
             `).join('');
+        } else {
+            html += '<p style="color:#9CA3AF;text-align:center;padding:20px;">No mock agents available</p>';
         }
+        html += `</div>`;
 
         contentDiv.innerHTML = html;
     } catch (err) {
@@ -1735,6 +1752,31 @@ async function showAgentInventory() {
     }
 
     modal.style.display = 'block';
+}
+
+// Switch between Production and Mock tabs
+function switchAgentTab(tab) {
+    // Hide all tabs
+    document.getElementById('tab-content-production').style.display = 'none';
+    document.getElementById('tab-content-mock').style.display = 'none';
+
+    // Remove active styles from all buttons
+    document.getElementById('tab-production').style.color = '#9CA3AF';
+    document.getElementById('tab-production').style.borderBottom = '3px solid transparent';
+    document.getElementById('tab-mock').style.color = '#9CA3AF';
+    document.getElementById('tab-mock').style.borderBottom = '3px solid transparent';
+
+    // Show selected tab and activate button
+    if (tab === 'production') {
+        document.getElementById('tab-content-production').style.display = 'block';
+        document.getElementById('tab-production').style.color = '#3B82F6';
+        document.getElementById('tab-production').style.borderBottom = '3px solid #3B82F6';
+    } else {
+        document.getElementById('tab-content-mock').style.display = 'block';
+        document.getElementById('tab-mock').style.color = '#3B82F6';
+        document.getElementById('tab-mock').style.borderBottom = '3px solid #3B82F6';
+    }
+    console.log('[TABS] Switched to', tab, 'tab');
 }
 
 // Initialize immediately and on page load
