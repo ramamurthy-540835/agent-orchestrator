@@ -282,7 +282,8 @@ async def submit_decision(workflow_id: str, request: SubmitApprovalRequest):
     workflow = workflows_store[workflow_id]
     state = workflow["state"]
 
-    if not state.get("human_checkpoint_pending"):
+    # Check both old and new checkpoint pending fields
+    if not (state.get("checkpoint_pending") or state.get("human_checkpoint_pending")):
         raise HTTPException(status_code=400, detail="No pending decision for this workflow")
 
     # Record the human decision
@@ -299,14 +300,40 @@ async def submit_decision(workflow_id: str, request: SubmitApprovalRequest):
     decisions.append(decision_record)
     state["human_decisions"] = decisions
 
-    # Resume workflow - the graph will use this decision
-    state["human_checkpoint_pending"] = False
-    state["status"] = "RUNNING"
+    # Handle abort decision
+    if request.status == "abort":
+        state["status"] = "ABORTED"
+        state["checkpoint_pending"] = False
+        state["human_checkpoint_pending"] = False
+        # Add abort log entry
+        log = list(state.get("execution_log", []))
+        log.append({
+            "id": str(uuid.uuid4())[:8],
+            "timestamp": datetime.now().isoformat(),
+            "event_type": "WORKFLOW_COMPLETE",
+            "agent": "orchestrator",
+            "step": state.get("current_step", 0),
+            "details": {"message": "🛑 Pipeline aborted by human decision."}
+        })
+        state["execution_log"] = log
+    else:
+        # Resume workflow for approve/fix decisions
+        state["checkpoint_pending"] = False
+        state["human_checkpoint_pending"] = False
+        state["status"] = "RUNNING"
+
+        # Determine next agent based on checkpoint type
+        checkpoint_type = state.get("checkpoint_type", "")
+        if checkpoint_type == "QUALITY_GATE":
+            state["current_agent"] = "classifier"
+        elif checkpoint_type == "PII_GATE":
+            state["current_agent"] = "autoloader"
+
     workflow["last_updated"] = datetime.now().isoformat()
 
     return {
         "workflow_id": workflow_id,
-        "status": "resumed",
+        "status": "resumed" if request.status != "abort" else "aborted",
         "checkpoint": state.get("checkpoint_type"),
         "decision_recorded": request.status,
     }

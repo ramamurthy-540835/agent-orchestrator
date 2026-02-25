@@ -285,6 +285,10 @@
 </div>
 
 <script>
+// Make solution data available to JavaScript
+window.currentSolution = <%- JSON.stringify(solution) %>;
+window.currentWorkflowId = null;
+
 // Add CSS animations for execution flow
 const style = document.createElement('style');
 style.innerHTML = `
@@ -570,17 +574,25 @@ const EVENT_EMOJI = {
     'WORKFLOW_COMPLETE': '🏁'
 };
 
-// Build dynamic LangGraph diagram based on workflow steps
+// Build dynamic LangGraph diagram based on actual solution steps
 function renderGraphStructure() {
     const diagram = document.getElementById('orchestratorDiagram');
     if (!diagram) return;
 
-    // Get workflow steps from the page
-    const steps = Array.from(document.querySelectorAll('[data-step-id]')).map(node => ({
-        id: node.getAttribute('data-step-id'),
-        name: node.querySelector('.workflow-node-name').textContent.trim(),
-        endpoint: node.querySelector('.workflow-node-endpoint').textContent.trim()
-    }));
+    // Get steps from solution data (not DOM, to avoid duplicates)
+    let steps = [];
+    if (window.currentSolution && window.currentSolution.steps && window.currentSolution.steps.length > 0) {
+        // Deduplicate by endpoint and sort by order
+        const seen = new Set();
+        steps = window.currentSolution.steps
+            .sort((a, b) => (a.order || 0) - (b.order || 0))
+            .filter(s => {
+                const key = s.endpointName || s.name;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+    }
 
     let html = '';
 
@@ -589,25 +601,30 @@ function renderGraphStructure() {
     html += '<span style="color:#9CA3AF;">→</span>';
 
     if (steps.length === 0) {
-        // Empty workflow - show placeholder
-        html += '<div style="background:#d1d5db;color:#6b7280;padding:8px 12px;border-radius:8px;font-size:11px;text-align:center;"><i>No agents added</i></div>';
+        // Empty workflow
+        html += '<div style="background:#d1d5db;color:#6b7280;padding:8px 12px;border-radius:8px;font-size:11px;text-align:center;"><i>No agents configured</i></div>';
     } else {
-        // Add each step with supervisor
+        // Add each step: Agent → Supervisor → Gate (if not last)
         steps.forEach((step, idx) => {
+            const stepName = step.name || 'Agent';
+            const endpoint = step.endpointName || '';
+            const shortEndpoint = endpoint.replace('mit_', '').replace('_endpoint', '').replace(/_/g, ' ').substring(0, 12);
+
             // Agent node
-            html += `<div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;"><b>🤖 ${step.name}</b><br><span style="font-size:9px;opacity:.8">${step.endpoint.substring(0, 15)}</span></div>`;
+            html += `<div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;data-agent='${endpoint}'"><b>🤖 ${stepName}</b><br><span style="font-size:9px;opacity:.8">${shortEndpoint}</span></div>`;
             html += '<span style="color:#9CA3AF;">→</span>';
 
             // Supervisor node
             html += '<div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">review</span></div>';
 
-            // Add decision gate after each step (except last)
+            // Decision gate (except after last step)
             if (idx < steps.length - 1) {
                 html += '<span style="color:#9CA3AF;">→</span>';
-                html += '<div style="background:#F59E0B;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;border:2px dashed #D97706;"><b>⚠️</b><br><span style="font-size:8px;">decide</span></div>';
+                html += '<div style="background:#F59E0B;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;border:2px dashed #D97706;"><b>⚠️</b><br><span style="font-size:8px;">gate</span></div>';
+                html += '<span style="color:#9CA3AF;">→</span>';
+            } else {
+                html += '<span style="color:#9CA3AF;">→</span>';
             }
-
-            html += '<span style="color:#9CA3AF;">→</span>';
         });
     }
 
@@ -615,7 +632,7 @@ function renderGraphStructure() {
     html += '<div style="background:#10B981;color:white;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;">🏁 END</div>';
 
     diagram.innerHTML = html;
-    console.log('[GRAPH] Dynamic diagram rendered with', steps.length, 'steps');
+    console.log('[GRAPH] Diagram rendered with', steps.length, 'unique steps');
 }
 
 // Toggle mock mode UI feedback
@@ -635,87 +652,116 @@ function toggleMockMode(checkbox) {
     }
 }
 
-// Real-time executor timeline animation
+// Real-time executor timeline animation - tracks progress from execution log
 function renderExecutionFlow(state) {
     const timeline = document.getElementById('executorTimeline');
     if (!timeline) return;
 
+    // Map agent names to display names
+    const agentNames = {
+        'profiler': 'Profile', 'supervisor_profile': 'Sup. Profile',
+        'quality': 'Quality', 'supervisor_quality': 'Sup. Quality',
+        'classifier': 'Classify', 'classify': 'Classify', 'supervisor_classify': 'Sup. Classify',
+        'autoloader': 'AutoLoad', 'supervisor_autoloader': 'Sup. AutoLoad',
+        'complete': 'Complete', 'quality_gate': 'Quality Gate', 'pii_gate': 'PII Gate'
+    };
+
     const nodeOrder = [
-        'profile', 'supervisor_profile',
+        'profiler', 'supervisor_profile',
         'quality', 'supervisor_quality',
-        'classify', 'supervisor_classify',
+        'classifier', 'supervisor_classify',
         'autoloader', 'supervisor_autoloader',
         'complete'
     ];
 
-    // Determine which nodes are completed from the log
+    // Track completed agents from execution_log
     const completedAgents = new Set();
-    const failedAgents = new Set();
-    if (state.execution_log) {
+    const agentLog = new Map();
+
+    if (state.execution_log && Array.isArray(state.execution_log)) {
         state.execution_log.forEach(entry => {
+            const agent = entry.agent || '';
+            agentLog.set(agent, entry);
+
+            // Mark as completed if we see AGENT_RESULT or SUPERVISOR_ANALYSIS
             if (entry.event_type === 'AGENT_RESULT') {
-                completedAgents.add(entry.agent);
-                if (entry.details?.status === 'FAILED') {
-                    failedAgents.add(entry.agent);
-                }
+                completedAgents.add(agent);
             }
             if (entry.event_type === 'SUPERVISOR_ANALYSIS') {
-                const supervisor_name = 'supervisor_' + entry.details?.step?.replace('after_', '');
-                if (supervisor_name !== 'supervisor_undefined') {
-                    completedAgents.add(supervisor_name);
-                }
+                // Map supervisor step to supervisor agent
+                const step = entry.details?.step || '';
+                if (step.includes('profile')) completedAgents.add('supervisor_profile');
+                if (step.includes('quality')) completedAgents.add('supervisor_quality');
+                if (step.includes('classify')) completedAgents.add('supervisor_classify');
+                if (step.includes('autoloader')) completedAgents.add('supervisor_autoloader');
             }
         });
     }
 
-    let html = '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px;">';
+    // Map current_agent to match nodeOrder names
+    const currentNodeMap = {
+        'profiler': 'profiler', 'profile': 'profiler',
+        'supervisor_profile': 'supervisor_profile',
+        'quality': 'quality', 'quality_gate': 'quality',
+        'supervisor_quality': 'supervisor_quality',
+        'classifier': 'classifier', 'classify': 'classifier',
+        'supervisor_classify': 'supervisor_classify',
+        'autoloader': 'autoloader',
+        'supervisor_autoloader': 'supervisor_autoloader',
+        'complete': 'complete'
+    };
+    const currentAgent = currentNodeMap[state.current_agent] || state.current_agent;
+
+    let html = '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px;">';
 
     nodeOrder.forEach(nodeName => {
-        const isRunning = state.current_agent === nodeName;
-        const isCompleted = completedAgents.has(nodeName) || (state.status === 'COMPLETED');
-        const isFailed = failedAgents.has(nodeName);
-        const isPaused = state.checkpoint_pending && nodeName === state.current_agent;
+        const isRunning = currentAgent === nodeName;
+        const isCompleted = completedAgents.has(nodeName);
+        const isPaused = (state.status === 'PAUSED' || state.checkpoint_pending) && isRunning;
+        const isFailed = state.status === 'FAILED' && isRunning;
 
-        let className = '';
         let emoji = '⭕';
         let bgColor = '#f3f4f6';
         let borderColor = '#d1d5db';
+        let textColor = '#6b7280';
+        let className = '';
 
         if (state.status === 'COMPLETED') {
-            className = 'node-completed';
             emoji = '✅';
             bgColor = '#10B981';
             borderColor = '#10B981';
+            textColor = 'white';
+            className = 'node-completed';
         } else if (isFailed) {
-            className = 'node-failed';
             emoji = '❌';
             bgColor = '#EF4444';
             borderColor = '#EF4444';
+            textColor = 'white';
+            className = 'node-failed';
         } else if (isPaused) {
-            className = 'node-paused';
             emoji = '⏸';
             bgColor = '#F59E0B';
             borderColor = '#F59E0B';
+            textColor = 'white';
+            className = 'node-paused';
         } else if (isRunning) {
-            className = 'node-running';
             emoji = '⚡';
             bgColor = '#3B82F6';
             borderColor = '#3B82F6';
+            textColor = 'white';
+            className = 'node-running';
         } else if (isCompleted) {
-            className = 'node-completed';
             emoji = '✅';
             bgColor = '#10B981';
             borderColor = '#10B981';
+            textColor = 'white';
+            className = 'node-completed';
         }
 
-        const displayName = nodeName
-            .replace(/_/g, ' ')
-            .replace(/supervisor /gi, 'Sup.')
-            .replace(/gate/gi, 'Gate');
+        const displayName = agentNames[nodeName] || nodeName.replace(/_/g, ' ');
 
         html += `
-        <div class="${className}" style="background: ${bgColor}; border: 2px solid ${borderColor}; border-radius: 8px; padding: 12px 8px; text-align: center; font-size: 0.75rem; cursor: pointer; color: white; font-weight: 600; transition: all 0.3s;"
-             title="${nodeName}" onclick="highlightLogEntry('${nodeName}')">
+        <div class="${className}" style="background: ${bgColor}; border: 2px solid ${borderColor}; border-radius: 8px; padding: 12px 8px; text-align: center; font-size: 0.75rem; cursor: pointer; color: ${textColor}; font-weight: 600; transition: all 0.3s;" title="${nodeName}">
             <div style="font-size: 1.4rem; margin-bottom: 6px;">${emoji}</div>
             <div style="word-break: break-word; line-height: 1.2;">${displayName}</div>
         </div>`;
@@ -723,7 +769,7 @@ function renderExecutionFlow(state) {
 
     html += '</div>';
     timeline.innerHTML = html;
-    console.log('[FLOW] Execution flow updated - completed: ' + Array.from(completedAgents).join(', '));
+    console.log('[FLOW] Flow updated - current:', currentAgent, 'completed:', Array.from(completedAgents).join(', '), 'status:', state.status);
 }
 
 // Format log entry with color and emoji
@@ -860,8 +906,8 @@ function startLogPolling(workflowId) {
     // Render initial graph structure
     renderGraphStructure();
 
-    // Poll every 1 second for live updates
-    logPollingInterval = setInterval(() => fetchAndUpdateLogs(workflowId), 1000);
+    // Poll every 2 seconds for live updates (smooth transitions, visible color changes)
+    logPollingInterval = setInterval(() => fetchAndUpdateLogs(workflowId), 2000);
 
     // First fetch immediately
     fetchAndUpdateLogs(workflowId);
@@ -912,12 +958,10 @@ async function fetchAndUpdateLogs(workflowId) {
             indicator.style.color = '#22c55e';
         }
 
-        // Handle human checkpoint - only show modal if:
-        // 1. Checkpoint is pending
-        // 2. Modal is not already open
-        // 3. This is a NEW checkpoint (different ID)
-        if (data.human_checkpoint_pending && data.checkpoint_details && !checkpointModalOpen) {
-            const checkpointId = data.checkpoint_details.id || data.checkpoint_type;
+        // Handle human checkpoint - triggered by checkpoint_pending flag from graph
+        const checkpointPending = data.checkpoint_pending || data.human_checkpoint_pending;
+        if (checkpointPending && !checkpointModalOpen) {
+            const checkpointId = data.checkpoint_type || 'unknown';
             if (lastCheckpointId !== checkpointId) {
                 lastCheckpointId = checkpointId;
                 checkpointModalOpen = true;

@@ -368,18 +368,34 @@ def supervisor_quality_node(state: WorkflowState) -> dict:
     decisions = list(state.get("supervisor_decisions", []))
     score = state.get("quality_score", 50)
 
-    if score >= 80:
-        analysis = f"Quality score {score}% exceeds threshold. Auto-approving."
+    # Check if quality score is below threshold - trigger human checkpoint
+    if score < 80:
+        analysis = f"⚠️ Quality score {score}% is below 80% threshold. Human review required."
+        log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
+            "message": analysis,
+            "confidence": 75,
+            "quality_score": score
+        }))
+        log.append(log_entry(state, "HUMAN_CHECKPOINT", "quality_gate", {
+            "message": f"Quality checkpoint: score {score}% below threshold. Require human approval to proceed.",
+            "question": f"Quality score is {score}%. Do you want to proceed with data classification anyway?",
+            "options": ["approve", "fix", "abort"]
+        }))
+        entry = {"step": "after_quality", "analysis": analysis, "confidence": 75, "decision": "PAUSED", "quality_score": score}
+        decisions.append(entry)
+        return {
+            "execution_log": log,
+            "supervisor_decisions": decisions,
+            "status": "PAUSED",
+            "checkpoint_pending": True,
+            "checkpoint_type": "QUALITY_GATE",
+            "supervisor_guidance": f"Quality score {score}% below 80% threshold. Review recommended before proceeding to classification.",
+            "current_agent": "quality_gate"
+        }
+    else:
+        analysis = f"✅ Quality score {score}% meets threshold. Auto-approving for classification."
         decision = "AUTO_APPROVE"
         confidence = 95
-    elif score >= 60:
-        analysis = f"Quality score {score}% is moderate. Proceeding with classification."
-        decision = "PROCEED"
-        confidence = 75
-    else:
-        analysis = f"Quality score {score}% is low but proceeding to get full picture."
-        decision = "PROCEED_WITH_CAUTION"
-        confidence = 55
 
     entry = {"step": "after_quality", "analysis": analysis, "confidence": confidence, "decision": decision, "quality_score": score}
     decisions.append(entry)
@@ -463,11 +479,34 @@ def supervisor_classify_node(state: WorkflowState) -> dict:
     decisions = list(state.get("supervisor_decisions", []))
     pii = state.get("pii_detected", [])
 
-    if pii:
-        analysis = f"PII detected: {', '.join(pii)}. Encryption recommended. Proceeding to autoloader."
-        confidence = 80
+    # Check for restricted PII that requires human confirmation
+    restricted_pii = [p for p in pii if p in ['ssn', 'credit_card', 'credit', 'social_security', 'social security']]
+
+    if restricted_pii:
+        analysis = f"🔒 Restricted PII detected: {', '.join(restricted_pii)}. Human confirmation required before autoload."
+        log.append(log_entry(state, "SUPERVISOR_ANALYSIS", "supervisor", {
+            "message": analysis,
+            "confidence": 85,
+            "pii_detected": pii
+        }))
+        log.append(log_entry(state, "HUMAN_CHECKPOINT", "pii_gate", {
+            "message": f"PII checkpoint: Restricted PII ({', '.join(restricted_pii)}) detected. Encryption required.",
+            "question": f"Restricted PII found: {', '.join(restricted_pii)}. Proceed with encryption, or abort?",
+            "options": ["approve_encrypt", "abort"]
+        }))
+        entry = {"step": "after_classify", "analysis": analysis, "confidence": 85, "decision": "PAUSED", "pii": pii}
+        decisions.append(entry)
+        return {
+            "execution_log": log,
+            "supervisor_decisions": decisions,
+            "status": "PAUSED",
+            "checkpoint_pending": True,
+            "checkpoint_type": "PII_GATE",
+            "supervisor_guidance": f"Restricted PII ({', '.join(restricted_pii)}) detected. Encryption recommended before loading. Confidence: 85%",
+            "current_agent": "pii_gate"
+        }
     else:
-        analysis = "No restricted PII detected. Safe to proceed to autoloader."
+        analysis = "✅ No restricted PII detected. Safe to proceed to autoloader."
         confidence = 95
 
     entry = {"step": "after_classify", "analysis": analysis, "confidence": confidence, "pii": pii}

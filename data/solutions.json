@@ -7,52 +7,44 @@
       "workspaceId": "default-workspace",
       "steps": [
         {
-          "id": "autoloader-step",
-          "name": "Auto Loader",
-          "endpointName": "mit_autoloader_agent_endpoint",
-          "description": "Load customer data via Auto Loader",
-          "inputMapping": "input_array",
+          "id": "b123ec1c-0c77-4b62-92cc-d09ba68e774d",
+          "name": "Profile DataScout",
+          "endpointName": "mit_structured_data_profiler_endpoint",
+          "description": "Analyzes data structure, types, and completeness",
+          "inputMapping": "passthrough",
           "order": 0
         },
         {
-          "id": "quality-step",
-          "name": "Data Quality Check",
+          "id": "a456ef2d-1f88-5c73-93dd-e10cb79f885e",
+          "name": "Quality DataGuard",
           "endpointName": "mit_data_quality_agent_endpoint",
-          "description": "Run quality checks on customer data",
-          "inputMapping": "input_array",
+          "description": "Validates data against business rules",
+          "inputMapping": "passthrough",
           "order": 1
         },
         {
-          "id": "classifier-step",
-          "name": "Classifier",
+          "id": "c789gh3e-2g99-6d84-94ee-f21dc80fa99f",
+          "name": "Classify PII Guard",
           "endpointName": "mit_data_classifier_endpoint",
-          "description": "Classify sensitive fields (PII)",
-          "inputMapping": "input_array",
+          "description": "Classifies sensitive columns by risk level",
+          "inputMapping": "passthrough",
           "order": 2
         },
         {
-          "id": "d21ab91c-f15a-4101-8689-ddbb58135391",
-          "name": "autoloader agent",
+          "id": "0e2227c3-1636-4686-b21f-84fd80e530bf",
+          "name": "AutoLoad Pipeline",
           "endpointName": "mit_autoloader_agent_endpoint",
-          "description": "",
+          "description": "Generates PySpark Auto Loader code",
           "inputMapping": "passthrough",
           "order": 3
-        },
-        {
-          "id": "157dae75-3579-41f1-b899-9e25eb09d3f3",
-          "name": "autoloader agent",
-          "endpointName": "mit_autoloader_agent_endpoint",
-          "description": "",
-          "inputMapping": "passthrough",
-          "order": 4
         }
       ],
       "status": "active",
       "createdAt": "2026-02-24T10:00:00Z",
-      "updatedAt": "2026-02-24T20:18:28.401Z",
+      "updatedAt": "2026-02-25T10:09:35.545Z",
       "lastRun": {
-        "timestamp": "2026-02-24T20:18:28.401Z",
-        "workflow_id": "2093ce66-5c0e-41db-acf0-5c635c8957f3"
+        "timestamp": "2026-02-25T10:09:35.544Z",
+        "workflow_id": "5d444aed-8917-4a3b-8af1-36d9e970e27c"
       }
     }
   ],
