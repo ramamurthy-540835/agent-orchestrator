@@ -707,7 +707,10 @@ function extractOutput(response) {
 
 function databricksRequest(config, method, apiPath, body) {
     return new Promise((resolve, reject) => {
-        let baseUrl = config.workspaceUrl.replace(/\/+$/, '');
+        if (!config || !config.workspaceUrl || !config.token) {
+            return reject(new Error('Databricks configuration missing: workspaceUrl or token'));
+        }
+        let baseUrl = (config.workspaceUrl || '').replace(/\/+$/, '');
         if (!baseUrl.startsWith('http')) baseUrl = 'https://' + baseUrl;
         const url = new URL(apiPath, baseUrl);
         const isHttps = url.protocol === 'https:';
