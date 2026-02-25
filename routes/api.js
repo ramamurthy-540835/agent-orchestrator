@@ -350,8 +350,28 @@ router.get('/workspaces/:id/endpoints', async (req, res) => {
 
 // ─── Legacy endpoints listing (uses first workspace or old config) ───
 router.get('/endpoints', async (req, res) => {
-    const workspaces = store.getAllWorkspaces();
-    const config = workspaces.length > 0 ? workspaces[0] : store.getConfig();
+    // Prefer environment variables, fallback to stored workspaces
+    let config = null;
+
+    if (process.env.DATABRICKS_HOST && process.env.DATABRICKS_TOKEN) {
+        // Use environment variables if available
+        config = {
+            workspaceUrl: process.env.DATABRICKS_HOST,
+            token: process.env.DATABRICKS_TOKEN
+        };
+    } else {
+        // Otherwise find first workspace with valid credentials
+        const workspaces = store.getAllWorkspaces();
+        if (workspaces.length > 0) {
+            config = workspaces.find(w => w.workspaceUrl && w.token);
+        }
+
+        // Final fallback to stored config
+        if (!config) {
+            config = store.getConfig();
+        }
+    }
+
     if (!config.workspaceUrl || !config.token) {
         return res.json({ endpoints: [], error: 'Databricks not configured' });
     }
@@ -396,8 +416,27 @@ router.get('/endpoints', async (req, res) => {
 // ─── Agent Inventory: Real + Mock agents ───
 router.get('/agents/inventory', async (req, res) => {
     try {
-        const workspaces = store.getAllWorkspaces();
-        const config = workspaces.length > 0 ? workspaces[0] : store.getConfig();
+        // Prefer environment variables, fallback to stored workspaces
+        let config = null;
+
+        if (process.env.DATABRICKS_HOST && process.env.DATABRICKS_TOKEN) {
+            // Use environment variables if available
+            config = {
+                workspaceUrl: process.env.DATABRICKS_HOST,
+                token: process.env.DATABRICKS_TOKEN
+            };
+        } else {
+            // Otherwise find first workspace with valid credentials
+            const workspaces = store.getAllWorkspaces();
+            if (workspaces.length > 0) {
+                config = workspaces.find(w => w.workspaceUrl && w.token);
+            }
+
+            // Final fallback to stored config
+            if (!config) {
+                config = store.getConfig();
+            }
+        }
 
         // Real agents from Databricks
         let realAgents = [];
