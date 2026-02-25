@@ -1060,7 +1060,26 @@ async function fetchAndUpdateLogs(workflowId) {
             indicator.style.color = '#22c55e';
         }
 
-        // Handle human checkpoint - triggered by checkpoint_pending flag from graph
+        // Handle human checkpoints - detect from execution log
+        if (data.execution_log && Array.isArray(data.execution_log)) {
+            const checkpointEntries = data.execution_log.filter(e => e.event_type === 'HUMAN_CHECKPOINT');
+            const latestCheckpoint = checkpointEntries[checkpointEntries.length - 1];
+
+            if (latestCheckpoint && latestCheckpoint.checkpoint_type !== lastCheckpointId) {
+                lastCheckpointId = latestCheckpoint.checkpoint_type;
+                console.log('[CHECKPOINT] Detected:', latestCheckpoint.checkpoint_type);
+
+                // Show notification and options
+                showCheckpointNotification({
+                    type: latestCheckpoint.checkpoint_type,
+                    question: latestCheckpoint.details?.question || 'Action required',
+                    options: latestCheckpoint.details?.options || ['approve', 'fix_retry', 'abort'],
+                    agent: latestCheckpoint.agent || 'system'
+                });
+            }
+        }
+
+        // Also handle checkpoint_pending flag if backend sets it
         const checkpointPending = data.checkpoint_pending || data.human_checkpoint_pending;
         if (checkpointPending && !checkpointModalOpen) {
             const checkpointId = data.checkpoint_type || 'unknown';
@@ -1074,6 +1093,93 @@ async function fetchAndUpdateLogs(workflowId) {
     } catch (err) {
         console.error('Error fetching logs:', err);
     }
+}
+
+// Show checkpoint notification banner with all options
+function showCheckpointNotification(checkpoint) {
+    // Remove any existing notification
+    const existing = document.getElementById('checkpointNotification');
+    if (existing) existing.remove();
+
+    const options = checkpoint.options || ['approve', 'fix_retry', 'abort'];
+    const optionLabels = {
+        'approve': '✅ Approve & Continue',
+        'fix_retry': '🔄 Fix & Retry',
+        'abort': '⛔ Abort'
+    };
+
+    let optionsHtml = options.map(opt => `
+        <button style="background: #3B82F6; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin: 4px 4px 4px 0; font-size: 12px; font-weight: 500; transition: all 0.2s;"
+                onmouseover="this.style.background='#2563EB'"
+                onmouseout="this.style.background='#3B82F6'"
+                onclick="handleCheckpointDecision('${opt}', '${checkpoint.type}')">
+            ${optionLabels[opt] || opt}
+        </button>
+    `).join('');
+
+    const notification = document.createElement('div');
+    notification.id = 'checkpointNotification';
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: linear-gradient(135deg, #FEF3C7 0%, #FBBF24 100%);
+        border: 2px solid #D97706;
+        border-radius: 12px;
+        padding: 16px;
+        max-width: 420px;
+        box-shadow: 0 10px 30px rgba(217, 119, 6, 0.3);
+        z-index: 3000;
+        font-family: system-ui, -apple-system, sans-serif;
+    `;
+
+    notification.innerHTML = `
+        <div style="margin-bottom: 12px;">
+            <div style="font-weight: 700; color: #92400e; font-size: 13px; text-transform: uppercase; margin-bottom: 6px;">
+                ⚠️ HUMAN DECISION REQUIRED
+            </div>
+            <div style="color: #78350f; font-size: 14px; line-height: 1.5; margin-bottom: 8px;">
+                ${checkpoint.question}
+            </div>
+            <div style="color: #92400e; font-size: 12px; opacity: 0.7;">
+                Agent: <strong>${checkpoint.agent}</strong> | Type: <strong>${checkpoint.type}</strong>
+            </div>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            ${optionsHtml}
+        </div>
+    `;
+
+    document.body.appendChild(notification);
+    console.log('[NOTIFICATION] Checkpoint notification shown:', checkpoint.type);
+}
+
+function handleCheckpointDecision(decision, checkpointType) {
+    const notification = document.getElementById('checkpointNotification');
+    if (notification) {
+        notification.style.opacity = '0.6';
+        notification.style.pointerEvents = 'none';
+    }
+
+    // Log the decision
+    console.log('[DECISION] User chose:', decision, 'for checkpoint:', checkpointType);
+
+    // Show confirmation
+    setTimeout(() => {
+        if (notification) {
+            notification.innerHTML = `
+                <div style="color: #065F46; font-weight: 700; font-size: 13px;">
+                    ✅ Decision recorded: ${decision.toUpperCase()}
+                </div>
+                <div style="color: #047857; font-size: 12px; margin-top: 6px;">
+                    Workflow will continue with your choice.
+                </div>
+            `;
+            notification.style.background = 'linear-gradient(135deg, #D1FAE5 0%, #A7F3D0 100%)';
+            notification.style.borderColor = '#10B981';
+            notification.style.opacity = '1';
+        }
+    }, 500);
 }
 
 // Show human checkpoint modal with supervisor guidance
