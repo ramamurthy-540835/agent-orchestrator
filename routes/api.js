@@ -421,42 +421,47 @@ router.post('/solutions/:id/execute', upload.single('file'), async (req, res) =>
             return res.status(400).json({ error: 'No input data provided' });
         }
 
-        // Build agent order from solution steps (sorted by order)
-        // Map step names/endpoints to internal agent names for LangGraph
-        const agentNameMap = {
-            'profiler': 'profiler',
-            'data profiler': 'profiler',
-            'auto loader': 'profiler',
-            'profile': 'profiler',
-            'mit_structured_data_profiler_endpoint': 'profiler',
+        // Use agent_order from request if provided (from frontend), otherwise build from solution steps
+        let agentOrder = req.body.agent_order;
 
-            'quality': 'quality',
-            'data quality check': 'quality',
-            'quality check': 'quality',
-            'mit_data_quality_agent_endpoint': 'quality',
-            'mit_data_quality_agent_endpoint_qa': 'quality',
+        if (!agentOrder || agentOrder.length === 0) {
+            // Fallback: build agent order from solution steps (sorted by order)
+            // Map step names/endpoints to internal agent names for LangGraph
+            const agentNameMap = {
+                'profiler': 'profiler',
+                'data profiler': 'profiler',
+                'auto loader': 'profiler',
+                'profile': 'profiler',
+                'mit_structured_data_profiler_endpoint': 'profiler',
 
-            'classify': 'classify',
-            'classifier': 'classifier',
-            'classification': 'classifier',
-            'pii guard': 'classifier',
-            'mit_data_classifier_endpoint': 'classifier',
+                'quality': 'quality',
+                'data quality check': 'quality',
+                'quality check': 'quality',
+                'mit_data_quality_agent_endpoint': 'quality',
+                'mit_data_quality_agent_endpoint_qa': 'quality',
 
-            'autoload': 'autoloader',
-            'autoloader': 'autoloader',
-            'autoloader agent': 'autoloader',
-            'auto load': 'autoloader',
-            'mit_autoloader_agent_endpoint': 'autoloader'
-        };
+                'classify': 'classify',
+                'classifier': 'classifier',
+                'classification': 'classifier',
+                'pii guard': 'classifier',
+                'mit_data_classifier_endpoint': 'classifier',
 
-        const agentOrder = solution.steps
-            .sort((a, b) => a.order - b.order)
-            .map(step => {
-                const stepName = step.name.toLowerCase();
-                const endpointName = (step.endpointName || '').toLowerCase();
-                // Try step name first, then endpoint name
-                return agentNameMap[stepName] || agentNameMap[endpointName] || stepName;
-            });
+                'autoload': 'autoloader',
+                'autoloader': 'autoloader',
+                'autoloader agent': 'autoloader',
+                'auto load': 'autoloader',
+                'mit_autoloader_agent_endpoint': 'autoloader'
+            };
+
+            agentOrder = solution.steps
+                .sort((a, b) => a.order - b.order)
+                .map(step => {
+                    const stepName = step.name.toLowerCase();
+                    const endpointName = (step.endpointName || '').toLowerCase();
+                    // Try step name first, then endpoint name
+                    return agentNameMap[stepName] || agentNameMap[endpointName] || stepName;
+                });
+        }
 
         // Get mock mode preference from request (default: true for mock mode)
         const useMockMode = req.body.useMockMode !== false;

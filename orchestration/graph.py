@@ -241,6 +241,14 @@ def truncate_csv(data: str, max_rows: int = 50) -> str:
 
 def profile_node(state: WorkflowState) -> dict:
     print(f"[NODE] profile_node starting")
+
+    # Skip if profiler is not in the configured agent order
+    agent_order = state.get("agent_order", [])
+    if "profiler" not in agent_order:
+        print(f"[NODE] profile_node skipped (not in agent_order)")
+        return {"current_agent": "quality" if "quality" in agent_order else "classifier" if "classifier" in agent_order else "autoloader" if "autoloader" in agent_order else "complete",
+                "current_step": state.get("current_step", 0) + 1}
+
     log = list(state.get("execution_log", []))
     results = dict(state.get("results", {}))
 
@@ -304,6 +312,14 @@ def supervisor_profile_node(state: WorkflowState) -> dict:
 
 def quality_node(state: WorkflowState) -> dict:
     print(f"[NODE] quality_node starting")
+
+    # Skip if quality is not in the configured agent order
+    agent_order = state.get("agent_order", [])
+    if "quality" not in agent_order:
+        print(f"[NODE] quality_node skipped (not in agent_order)")
+        return {"current_agent": "classifier" if "classifier" in agent_order else "autoloader" if "autoloader" in agent_order else "complete",
+                "current_step": state.get("current_step", 0) + 1}
+
     log = list(state.get("execution_log", []))
     results = dict(state.get("results", {}))
 
@@ -413,6 +429,14 @@ def supervisor_quality_node(state: WorkflowState) -> dict:
 
 def classify_node(state: WorkflowState) -> dict:
     print(f"[NODE] classify_node starting")
+
+    # Skip if classifier is not in the configured agent order
+    agent_order = state.get("agent_order", [])
+    if "classifier" not in agent_order:
+        print(f"[NODE] classify_node skipped (not in agent_order)")
+        return {"current_agent": "autoloader" if "autoloader" in agent_order else "complete",
+                "current_step": state.get("current_step", 0) + 1}
+
     log = list(state.get("execution_log", []))
     results = dict(state.get("results", {}))
 
@@ -524,6 +548,14 @@ def supervisor_classify_node(state: WorkflowState) -> dict:
 
 def autoloader_node(state: WorkflowState) -> dict:
     print(f"[NODE] autoloader_node starting")
+
+    # Skip if autoloader is not in the configured agent order
+    agent_order = state.get("agent_order", [])
+    if "autoloader" not in agent_order:
+        print(f"[NODE] autoloader_node skipped (not in agent_order)")
+        return {"current_agent": "complete",
+                "current_step": state.get("current_step", 0) + 1}
+
     log = list(state.get("execution_log", []))
     results = dict(state.get("results", {}))
 

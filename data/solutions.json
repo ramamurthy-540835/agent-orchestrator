@@ -7,20 +7,12 @@
       "workspaceId": "default-workspace",
       "steps": [
         {
-          "id": "b123ec1c-0c77-4b62-92cc-d09ba68e774d",
-          "name": "Profile DataScout",
-          "endpointName": "mit_structured_data_profiler_endpoint",
-          "description": "Analyzes data structure, types, and completeness",
+          "id": "389f5f32-0bc5-487b-94b9-08445efbd545",
+          "name": "autoloader agent",
+          "endpointName": "mit_autoloader_agent_endpoint",
+          "description": "",
           "inputMapping": "passthrough",
           "order": 0
-        },
-        {
-          "id": "a456ef2d-1f88-5c73-93dd-e10cb79f885e",
-          "name": "Quality DataGuard",
-          "endpointName": "mit_data_quality_agent_endpoint",
-          "description": "Validates data against business rules",
-          "inputMapping": "passthrough",
-          "order": 1
         },
         {
           "id": "c789gh3e-2g99-6d84-94ee-f21dc80fa99f",
@@ -28,23 +20,15 @@
           "endpointName": "mit_data_classifier_endpoint",
           "description": "Classifies sensitive columns by risk level",
           "inputMapping": "passthrough",
-          "order": 2
-        },
-        {
-          "id": "0e2227c3-1636-4686-b21f-84fd80e530bf",
-          "name": "AutoLoad Pipeline",
-          "endpointName": "mit_autoloader_agent_endpoint",
-          "description": "Generates PySpark Auto Loader code",
-          "inputMapping": "passthrough",
-          "order": 3
+          "order": 1
         }
       ],
       "status": "active",
       "createdAt": "2026-02-24T10:00:00Z",
-      "updatedAt": "2026-02-25T10:34:42.804Z",
+      "updatedAt": "2026-02-25T10:48:44.795Z",
       "lastRun": {
-        "timestamp": "2026-02-25T10:34:42.804Z",
-        "workflow_id": "68f714c5-2fb0-452e-b1b7-49c50606acd1"
+        "timestamp": "2026-02-25T10:48:44.795Z",
+        "workflow_id": "e3e70f84-952c-4346-b793-913c2e8984b1"
       }
     }
   ],

@@ -468,13 +468,25 @@ async function executeWorkflow() {
     status.style.color = 'var(--accent)';
 
     try {
+        // Build agent_order from CURRENT solution steps (not hardcoded)
+        const steps = window.currentSolution?.steps || [];
+        const agentOrder = steps.map(step => {
+            const ep = (step.endpointName || '').toLowerCase();
+            if (ep.includes('profiler')) return 'profiler';
+            if (ep.includes('quality')) return 'quality';
+            if (ep.includes('classifier')) return 'classifier';
+            if (ep.includes('autoloader')) return 'autoloader';
+            return 'profiler';
+        });
+
         const res = await fetch('/api/solutions/' + SOLUTION_ID + '/execute', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 input,
                 broadcastMode: document.getElementById('broadcastMode').checked,
-                useMockMode: useMockMode
+                useMockMode: useMockMode,
+                agent_order: agentOrder
             })
         });
         const data = await res.json();
@@ -574,65 +586,68 @@ const EVENT_EMOJI = {
     'WORKFLOW_COMPLETE': '🏁'
 };
 
-// Build dynamic LangGraph diagram based on actual solution steps
-function renderGraphStructure() {
+// Generate dynamic LangGraph diagram from CURRENT workflow steps in DOM
+function generateDynamicDiagram() {
     const diagram = document.getElementById('orchestratorDiagram');
     if (!diagram) return;
 
-    // Get steps from solution data (not DOM, to avoid duplicates)
-    let steps = [];
-    if (window.currentSolution && window.currentSolution.steps && window.currentSolution.steps.length > 0) {
-        // Deduplicate by endpoint and sort by order
-        const seen = new Set();
-        steps = window.currentSolution.steps
-            .sort((a, b) => (a.order || 0) - (b.order || 0))
-            .filter(s => {
-                const key = s.endpointName || s.name;
-                if (seen.has(key)) return false;
-                seen.add(key);
-                return true;
-            });
-    }
+    // Read CURRENT steps from the workflow pipeline cards in DOM
+    const stepCards = document.querySelectorAll('#workflowPipeline .workflow-agent, .workflow-agent[data-step-id]');
+    const steps = [];
 
-    let html = '';
+    stepCards.forEach((card, idx) => {
+        const nameEl = card.querySelector('.workflow-node-name');
+        const endpointEl = card.querySelector('.workflow-node-endpoint');
+        const name = nameEl ? nameEl.textContent.trim() : '';
+        const endpoint = endpointEl ? endpointEl.textContent.trim() : '';
 
-    // START node
-    html += '<div style="background:#10B981;color:white;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;">▶ START</div>';
-    html += '<span style="color:#9CA3AF;">→</span>';
+        if (name || endpoint) {
+            steps.push({ name: name || endpoint, endpoint, order: idx });
+        }
+    });
+
+    // Map endpoint names to display info
+    const nameMap = {
+        'mit_structured_data_profiler_endpoint': { display: 'Profile DataScout', short: 'profiler' },
+        'mit_data_quality_agent_endpoint': { display: 'Quality DataGuard', short: 'quality' },
+        'mit_data_classifier_endpoint': { display: 'Classify PII Guard', short: 'classifier' },
+        'mit_autoloader_agent_endpoint': { display: 'AutoLoad Pipeline', short: 'autoloader' }
+    };
+
+    let html = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px;">';
+
+    // START
+    html += '<div style="background:#10B981;color:white;padding:6px 12px;border-radius:16px;font-weight:600;font-size:11px;">▶ START</div>';
+    html += '<span style="color:#9CA3AF;font-size:16px;">→</span>';
 
     if (steps.length === 0) {
-        // Empty workflow
-        html += '<div style="background:#d1d5db;color:#6b7280;padding:8px 12px;border-radius:8px;font-size:11px;text-align:center;"><i>No agents configured</i></div>';
+        html += '<div style="color:#9CA3AF;font-size:11px;padding:8px;"><i>Add agents to see flow</i></div>';
     } else {
-        // Add each step: Agent → Supervisor → Gate (if not last)
         steps.forEach((step, idx) => {
-            const stepName = step.name || 'Agent';
-            const endpoint = step.endpointName || '';
-            const shortEndpoint = endpoint.replace('mit_', '').replace('_endpoint', '').replace(/_/g, ' ').substring(0, 12);
+            const info = nameMap[step.endpoint] || { display: step.name, short: step.name.substring(0, 10) };
 
             // Agent node
-            html += `<div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;data-agent='${endpoint}'"><b>🤖 ${stepName}</b><br><span style="font-size:9px;opacity:.8">${shortEndpoint}</span></div>`;
-            html += '<span style="color:#9CA3AF;">→</span>';
+            html += `<div style="background:#3B82F6;color:white;padding:6px 10px;border-radius:6px;font-size:10px;text-align:center;"><b>🤖</b><br><span style="font-size:8px;">${info.display.split(' ')[0]}</span></div>`;
+            html += '<span style="color:#9CA3AF;font-size:16px;">→</span>';
 
             // Supervisor node
-            html += '<div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">review</span></div>';
+            html += '<div style="background:#7C3AED;color:white;padding:4px 8px;border-radius:6px;font-size:9px;text-align:center;">🧠<br><span style="font-size:7px;">Sup</span></div>';
+            html += '<span style="color:#9CA3AF;font-size:16px;">→</span>';
 
-            // Decision gate (except after last step)
+            // Gate (not after last)
             if (idx < steps.length - 1) {
-                html += '<span style="color:#9CA3AF;">→</span>';
-                html += '<div style="background:#F59E0B;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;border:2px dashed #D97706;"><b>⚠️</b><br><span style="font-size:8px;">gate</span></div>';
-                html += '<span style="color:#9CA3AF;">→</span>';
-            } else {
-                html += '<span style="color:#9CA3AF;">→</span>';
+                html += '<div style="background:#F59E0B;color:white;padding:4px 8px;border-radius:6px;font-size:9px;text-align:center;border:1px dashed #D97706;">⚠️</div>';
+                html += '<span style="color:#9CA3AF;font-size:16px;">→</span>';
             }
         });
     }
 
-    // END node
-    html += '<div style="background:#10B981;color:white;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;">🏁 END</div>';
+    // END
+    html += '<div style="background:#EF4444;color:white;padding:6px 12px;border-radius:16px;font-weight:600;font-size:11px;">🏁 END</div>';
+    html += '</div>';
 
     diagram.innerHTML = html;
-    console.log('[GRAPH] Diagram rendered with', steps.length, 'unique steps');
+    console.log('[DIAGRAM] Updated with', steps.length, 'agents');
 }
 
 // Toggle mock mode UI feedback
@@ -652,27 +667,69 @@ function toggleMockMode(checkbox) {
     }
 }
 
+// Generate execution flow circles dynamically from current workflow steps
+function generateExecutionFlowCircles() {
+    const container = document.getElementById('executorTimeline');
+    if (!container) return;
+
+    // Read current steps from workflow cards in DOM
+    const stepCards = document.querySelectorAll('#workflowPipeline .workflow-agent');
+    const stepNames = [];
+
+    stepCards.forEach(card => {
+        const nameEl = card.querySelector('.workflow-node-name');
+        const name = nameEl ? nameEl.textContent.trim().toLowerCase() : '';
+        if (name) stepNames.push(name);
+    });
+
+    // Map step display names to node IDs for state tracking
+    const nodeMap = {
+        'profile': 'profiler', 'profiler': 'profiler', 'scout': 'profiler',
+        'quality': 'quality', 'guard': 'quality', 'dataguard': 'quality',
+        'classify': 'classifier', 'classifier': 'classifier', 'pii': 'classifier',
+        'autoload': 'autoloader', 'autoloader': 'autoloader', 'pipeline': 'autoloader'
+    };
+
+    // Build node order: agent + supervisor for each step
+    const nodeOrder = [];
+    stepNames.forEach(name => {
+        for (const [key, value] of Object.entries(nodeMap)) {
+            if (name.includes(key)) {
+                nodeOrder.push(value);
+                nodeOrder.push('supervisor_' + value);
+                break;
+            }
+        }
+    });
+    nodeOrder.push('complete');
+
+    // Store for renderExecutionFlow to use
+    window.currentNodeOrder = nodeOrder;
+    console.log('[EXEC_FLOW] Generated nodes:', nodeOrder);
+}
+
 // Real-time executor timeline animation - tracks progress from execution log
 function renderExecutionFlow(state) {
     const timeline = document.getElementById('executorTimeline');
     if (!timeline) return;
 
-    // Map agent names to display names
-    const agentNames = {
-        'profiler': 'Profile', 'supervisor_profile': 'Sup. Profile',
-        'quality': 'Quality', 'supervisor_quality': 'Sup. Quality',
-        'classifier': 'Classify', 'classify': 'Classify', 'supervisor_classify': 'Sup. Classify',
-        'autoloader': 'AutoLoad', 'supervisor_autoloader': 'Sup. AutoLoad',
-        'complete': 'Complete', 'quality_gate': 'Quality Gate', 'pii_gate': 'PII Gate'
-    };
-
-    const nodeOrder = [
+    // Use dynamically generated node order, fallback to default
+    const nodeOrder = window.currentNodeOrder || [
         'profiler', 'supervisor_profile',
         'quality', 'supervisor_quality',
         'classifier', 'supervisor_classify',
         'autoloader', 'supervisor_autoloader',
         'complete'
     ];
+
+    // Map agent names to display names
+    const agentNames = {
+        'profiler': 'Profile', 'supervisor_profiler': 'Sup. Profile',
+        'quality': 'Quality', 'supervisor_quality': 'Sup. Quality',
+        'classifier': 'Classify', 'supervisor_classifier': 'Sup. Classify',
+        'autoloader': 'AutoLoad', 'supervisor_autoloader': 'Sup. AutoLoad',
+        'complete': 'Complete', 'quality_gate': 'Quality Gate', 'pii_gate': 'PII Gate'
+    };
 
     // Track completed agents from execution_log
     const completedAgents = new Set();
@@ -903,8 +960,8 @@ function startLogPolling(workflowId) {
     document.getElementById('logVisualizerSection').style.display = 'block';
     document.getElementById('stateInspectorSection').style.display = 'block';
 
-    // Render initial graph structure
-    renderGraphStructure();
+    // Generate execution flow circles from current workflow steps
+    generateExecutionFlowCircles();
 
     // Poll every 2 seconds for live updates (smooth transitions, visible color changes)
     logPollingInterval = setInterval(() => fetchAndUpdateLogs(workflowId), 2000);
@@ -1450,7 +1507,7 @@ function initAll() {
             }
         }
 
-        renderGraphStructure();
+        generateDynamicDiagram();
         loadAvailableAgents();
         const ddSuccess = initDragDrop();
         if (!ddSuccess) {
