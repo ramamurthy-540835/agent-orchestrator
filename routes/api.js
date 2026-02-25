@@ -399,8 +399,10 @@ router.get('/agents/inventory', async (req, res) => {
             try {
                 const data = await databricksRequest(config, 'GET', '/api/2.0/serving-endpoints');
                 realAgents = (data.endpoints || [])
-                    .filter(ep => !ep.name.startsWith('databricks-'))
+                    .filter(ep => ep && ep.name && !ep.name.startsWith('databricks-'))
                     .map(ep => {
+                        if (!ep || !ep.name) return null;
+
                         // Handle various state field formats
                         let state = 'UNKNOWN';
                         if (ep.state) {
@@ -414,14 +416,15 @@ router.get('/agents/inventory', async (req, res) => {
                         }
                         return {
                             name: ep.name,
-                            display_name: ep.name.replace(/_endpoint$/, '').replace(/_/g, ' ').toUpperCase(),
+                            display_name: (ep.name || '').replace(/_endpoint$/, '').replace(/_/g, ' ').toUpperCase(),
                             state: state,
                             source: 'DATABRICKS',
                             icon: '🤖',
                             type: 'Real Agent',
-                            category: categorizeAgent(ep.name)
+                            category: categorizeAgent(ep.name || '')
                         };
-                    });
+                    })
+                    .filter(a => a !== null);
             } catch (e) {
                 console.log('[INVENTORY] Failed to fetch real agents:', e.message);
             }
