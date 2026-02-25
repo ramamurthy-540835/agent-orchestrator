@@ -615,18 +615,26 @@ const EVENT_EMOJI = {
 // Generate dynamic LangGraph diagram from CURRENT workflow steps in DOM
 function generateDynamicDiagram() {
     const diagram = document.getElementById('orchestratorDiagram');
-    if (!diagram) return;
-
-    // Read CURRENT steps from the workflow pipeline cards in DOM - be explicit about selection
-    const pipeline = document.getElementById('workflowPipeline');
-    if (!pipeline) {
-        console.log('[DIAGRAM] No workflow pipeline found');
+    if (!diagram) {
+        console.warn('[DIAGRAM] Diagram element not found');
         return;
     }
 
-    // Select ONLY direct .workflow-agent children inside #workflowPipeline
-    const stepCards = pipeline.querySelectorAll(':scope > .workflow-agent');
-    console.log('[DIAGRAM] Found', stepCards.length, 'workflow agent cards');
+    // Read CURRENT steps from the workflow pipeline cards in DOM
+    const pipeline = document.getElementById('workflowPipeline');
+    if (!pipeline) {
+        console.warn('[DIAGRAM] Pipeline not found - no agents added yet');
+        return;
+    }
+
+    // Select all .workflow-agent cards - using Array.from for compatibility
+    const allCards = Array.from(pipeline.querySelectorAll('.workflow-agent'));
+    const stepCards = allCards.filter(card => {
+        // Ensure it's a direct child (no connector divs in between)
+        return card.parentElement === pipeline;
+    });
+
+    console.log('[DIAGRAM] Found', stepCards.length, 'direct workflow agent cards');
     const steps = [];
 
     stepCards.forEach((card, idx) => {
@@ -635,10 +643,9 @@ function generateDynamicDiagram() {
         const name = nameEl ? nameEl.textContent.trim() : '';
         const endpoint = endpointEl ? endpointEl.textContent.trim() : '';
 
-        console.log('[DIAGRAM] Card', idx, '- name:', name, 'endpoint:', endpoint);
-
         if (name || endpoint) {
             steps.push({ name: name || endpoint, endpoint, order: idx });
+            console.log('[DIAGRAM] Agent', idx, ':', name, '/', endpoint);
         }
     });
 
