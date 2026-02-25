@@ -617,8 +617,16 @@ function generateDynamicDiagram() {
     const diagram = document.getElementById('orchestratorDiagram');
     if (!diagram) return;
 
-    // Read CURRENT steps from the workflow pipeline cards in DOM
-    const stepCards = document.querySelectorAll('#workflowPipeline .workflow-agent, .workflow-agent[data-step-id]');
+    // Read CURRENT steps from the workflow pipeline cards in DOM - be explicit about selection
+    const pipeline = document.getElementById('workflowPipeline');
+    if (!pipeline) {
+        console.log('[DIAGRAM] No workflow pipeline found');
+        return;
+    }
+
+    // Select ONLY direct .workflow-agent children inside #workflowPipeline
+    const stepCards = pipeline.querySelectorAll(':scope > .workflow-agent');
+    console.log('[DIAGRAM] Found', stepCards.length, 'workflow agent cards');
     const steps = [];
 
     stepCards.forEach((card, idx) => {
@@ -626,6 +634,8 @@ function generateDynamicDiagram() {
         const endpointEl = card.querySelector('.workflow-node-endpoint');
         const name = nameEl ? nameEl.textContent.trim() : '';
         const endpoint = endpointEl ? endpointEl.textContent.trim() : '';
+
+        console.log('[DIAGRAM] Card', idx, '- name:', name, 'endpoint:', endpoint);
 
         if (name || endpoint) {
             steps.push({ name: name || endpoint, endpoint, order: idx });
