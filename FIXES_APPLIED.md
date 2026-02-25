@@ -11,7 +11,7 @@ Fixed critical API format and authentication issues preventing pipeline executio
 **Location:** `data/solutions.json`
 **Problem:** Workspace configuration used placeholder token instead of real Databricks PAT
 - Old: `"token": "dapi_pending_access"`
-- New: `"token": "dapia0b0cc277253ec27b9dc25426478699d-3"`
+- New: `"token": "[DATABRICKS_TOKEN]"` (stored in .env file)
 
 **Impact:** Pipeline execution now authenticates successfully with no 403 errors
 

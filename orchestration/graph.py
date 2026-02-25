@@ -21,9 +21,9 @@ except ImportError:
 # Mock mode configuration
 USE_MOCK = os.environ.get("USE_MOCK", "auto")  # auto | always | never
 
-# Databricks config
-DATABRICKS_HOST = "https://adb-1377606806062971.11.azuredatabricks.net"
-DATABRICKS_TOKEN = "dapia0b0cc277253ec27b9dc25426478699d-3"
+# Databricks config (loaded from environment variables)
+DATABRICKS_HOST = os.environ.get("DATABRICKS_HOST", "")
+DATABRICKS_TOKEN = os.environ.get("DATABRICKS_TOKEN", "")
 
 ENDPOINT_MAP = {
     "profiler": "mit_structured_data_profiler_endpoint",
