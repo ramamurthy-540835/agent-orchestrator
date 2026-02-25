@@ -312,8 +312,10 @@ router.get('/workspaces/:id/endpoints', async (req, res) => {
     try {
         const data = await databricksRequest(ws, 'GET', '/api/2.0/serving-endpoints');
         const endpoints = (data.endpoints || [])
-            .filter(ep => !ep.name.startsWith('databricks-'))
+            .filter(ep => ep && ep.name && !ep.name.startsWith('databricks-'))
             .map(ep => {
+                if (!ep || !ep.name) return null;
+
                 // Handle various state field formats from Databricks API
                 let state = 'UNKNOWN';
                 if (ep.state) {
@@ -332,6 +334,7 @@ router.get('/workspaces/:id/endpoints', async (req, res) => {
                     creation_timestamp: ep.creation_timestamp
                 };
             })
+            .filter(e => e !== null)
             .sort((a, b) => {
                 // Sort: READY first, then others alphabetically
                 if (a.state === 'READY' && b.state !== 'READY') return -1;
@@ -355,8 +358,10 @@ router.get('/endpoints', async (req, res) => {
     try {
         const data = await databricksRequest(config, 'GET', '/api/2.0/serving-endpoints');
         const endpoints = (data.endpoints || [])
-            .filter(ep => !ep.name.startsWith('databricks-'))
+            .filter(ep => ep && ep.name && !ep.name.startsWith('databricks-'))
             .map(ep => {
+                if (!ep || !ep.name) return null;
+
                 // Handle various state field formats from Databricks API
                 let state = 'UNKNOWN';
                 if (ep.state) {
@@ -375,6 +380,7 @@ router.get('/endpoints', async (req, res) => {
                     creation_timestamp: ep.creation_timestamp
                 };
             })
+            .filter(e => e !== null)
             .sort((a, b) => {
                 if (a.state === 'READY' && b.state !== 'READY') return -1;
                 if (a.state !== 'READY' && b.state === 'READY') return 1;
