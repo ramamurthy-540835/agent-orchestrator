@@ -106,35 +106,11 @@
     <h3>LangGraph Orchestrator Structure</h3>
     <p style="font-size: 0.85rem; color: var(--gray-600); margin-bottom: 12px;">Autonomous supervisor-guided execution flow with intelligent decision-making</p>
     <div style="padding:20px;background:#f8fafc;border-radius:12px;overflow-x:auto;">
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center;">
-            <div style="background:#10B981;color:white;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;">▶ START</div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;"><b>🤖 Profile</b><br><span style="font-size:9px;opacity:.8">DataScout</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">analyze</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;"><b>🤖 Quality</b><br><span style="font-size:9px;opacity:.8">DataGuard</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">score check</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#F59E0B;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;border:2px dashed #D97706;"><b>⚠️ Quality Gate</b><br><span style="font-size:8px;">≥80% auto | &lt;60% halt</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;"><b>🤖 Classify</b><br><span style="font-size:9px;opacity:.8">PII Guard</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">PII check</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#F59E0B;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;border:2px dashed #D97706;"><b>⚠️ PII Gate</b><br><span style="font-size:8px;">human confirm</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;"><b>🤖 AutoLoad</b><br><span style="font-size:9px;opacity:.8">Pipeline Gen</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">code review</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#F59E0B;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;border:2px dashed #D97706;"><b>⚠️ Review</b><br><span style="font-size:8px;">approve code</span></div>
-            <span style="color:#9CA3AF;">→</span>
-            <div style="background:#10B981;color:white;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;">🏁 END</div>
+        <div id="orchestratorDiagram" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center;">
+            <!-- Dynamically populated by JavaScript -->
         </div>
         <div style="display:flex;gap:16px;justify-content:center;margin-top:12px;font-size:10px;color:#6B7280;flex-wrap:wrap;">
-            <span>🔵 Agent</span><span>🟣 Supervisor</span><span>🟡 Human Gate</span><span>🟢 Start/End</span>
+            <span>🔵 Agent</span><span>🟣 Supervisor</span><span>🟡 Decision Gate</span><span>🟢 Start/End</span>
         </div>
     </div>
 </div>
@@ -208,6 +184,12 @@
                 <button class="btn-blue" id="executeBtn" style="padding: 10px 24px; border: none; cursor: pointer; font-size: 0.85rem;" onclick="executeWorkflow()" <%= solution.steps.length === 0 ? 'disabled' : '' %>>
                     &#x25B6; Execute Pipeline
                 </button>
+                <div style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: #f0f9ff; border: 1px solid #e0f2fe; border-radius: 6px;">
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.85rem; margin: 0;">
+                        <input type="checkbox" id="useMockMode" checked style="width: 16px; height: 16px; accent-color: var(--accent);" onchange="toggleMockMode(this)">
+                        <span style="font-weight: 500; color: #1e40af;">Mock Mode</span>
+                    </label>
+                </div>
                 <span id="execStatus" style="font-size: 0.85rem; color: var(--gray-500);"></span>
             </div>
         </div>
@@ -464,7 +446,7 @@ async function deleteSolution() {
     window.location = '/';
 }
 
-// Execute the workflow
+// Execute the workflow with real-time logging and mock mode support
 async function executeWorkflow() {
     let input = document.getElementById('execInput').value.trim();
     if (!input && !uploadedFileContent) { alert('Please enter an input prompt or attach a file.'); return; }
@@ -474,16 +456,22 @@ async function executeWorkflow() {
 
     const btn = document.getElementById('executeBtn');
     const status = document.getElementById('execStatus');
+    const useMockMode = document.getElementById('useMockMode').checked;
+
     btn.disabled = true;
-    btn.textContent = 'Executing...';
-    status.textContent = 'Running pipeline...';
+    btn.innerHTML = '<span class="spinner"></span>Executing...';
+    status.textContent = 'Starting orchestration' + (useMockMode ? ' (MOCK MODE)...' : '...');
     status.style.color = 'var(--accent)';
 
     try {
         const res = await fetch('/api/solutions/' + SOLUTION_ID + '/execute', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input, broadcastMode: document.getElementById('broadcastMode').checked })
+            body: JSON.stringify({
+                input,
+                broadcastMode: document.getElementById('broadcastMode').checked,
+                useMockMode: useMockMode
+            })
         });
         const data = await res.json();
 
@@ -495,9 +483,13 @@ async function executeWorkflow() {
             return;
         }
 
-        status.textContent = 'Completed!';
-        status.style.color = '#22c55e';
-        renderResults(data.results, data.finalOutput);
+        // Start real-time log polling
+        if (data.workflow_id) {
+            startLogPolling(data.workflow_id);
+        }
+
+        status.textContent = 'Pipeline running...';
+        status.style.color = 'var(--accent)';
     } catch (err) {
         status.textContent = 'Error: ' + err.message;
         status.style.color = '#ef4444';
@@ -578,11 +570,69 @@ const EVENT_EMOJI = {
     'WORKFLOW_COMPLETE': '🏁'
 };
 
-// Render LangGraph structure (ASCII diagram)
+// Build dynamic LangGraph diagram based on workflow steps
 function renderGraphStructure() {
-    // Graph structure is now static HTML with colored visualization
-    // No need to dynamically update it
-    console.log('[GRAPH] Graph structure is static');
+    const diagram = document.getElementById('orchestratorDiagram');
+    if (!diagram) return;
+
+    // Get workflow steps from the page
+    const steps = Array.from(document.querySelectorAll('[data-step-id]')).map(node => ({
+        id: node.getAttribute('data-step-id'),
+        name: node.querySelector('.workflow-node-name').textContent.trim(),
+        endpoint: node.querySelector('.workflow-node-endpoint').textContent.trim()
+    }));
+
+    let html = '';
+
+    // START node
+    html += '<div style="background:#10B981;color:white;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;">▶ START</div>';
+    html += '<span style="color:#9CA3AF;">→</span>';
+
+    if (steps.length === 0) {
+        // Empty workflow - show placeholder
+        html += '<div style="background:#d1d5db;color:#6b7280;padding:8px 12px;border-radius:8px;font-size:11px;text-align:center;"><i>No agents added</i></div>';
+    } else {
+        // Add each step with supervisor
+        steps.forEach((step, idx) => {
+            // Agent node
+            html += `<div style="background:#3B82F6;color:white;padding:6px 12px;border-radius:8px;font-size:11px;text-align:center;"><b>🤖 ${step.name}</b><br><span style="font-size:9px;opacity:.8">${step.endpoint.substring(0, 15)}</span></div>`;
+            html += '<span style="color:#9CA3AF;">→</span>';
+
+            // Supervisor node
+            html += '<div style="background:#7C3AED;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;">🧠 Supervisor<br><span style="font-size:8px;opacity:.8">review</span></div>';
+
+            // Add decision gate after each step (except last)
+            if (idx < steps.length - 1) {
+                html += '<span style="color:#9CA3AF;">→</span>';
+                html += '<div style="background:#F59E0B;color:white;padding:4px 10px;border-radius:8px;font-size:10px;text-align:center;border:2px dashed #D97706;"><b>⚠️</b><br><span style="font-size:8px;">decide</span></div>';
+            }
+
+            html += '<span style="color:#9CA3AF;">→</span>';
+        });
+    }
+
+    // END node
+    html += '<div style="background:#10B981;color:white;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;">🏁 END</div>';
+
+    diagram.innerHTML = html;
+    console.log('[GRAPH] Dynamic diagram rendered with', steps.length, 'steps');
+}
+
+// Toggle mock mode UI feedback
+function toggleMockMode(checkbox) {
+    const mockEnabled = checkbox.checked;
+    localStorage.setItem('useMockMode', mockEnabled);
+    console.log('[MODE] Mock mode', mockEnabled ? 'ENABLED' : 'DISABLED');
+
+    // Visual feedback
+    const label = checkbox.parentElement;
+    if (mockEnabled) {
+        label.style.color = '#1e40af';
+        label.style.fontWeight = '500';
+    } else {
+        label.style.color = '#b91c1c';
+        label.style.fontWeight = '500';
+    }
 }
 
 // Real-time executor timeline animation
@@ -979,53 +1029,7 @@ async function submitCheckpointDecision(decision, workflowId, modal) {
     }
 }
 
-// Update executeWorkflow to start log polling
-const originalExecuteWorkflow = executeWorkflow;
-async function executeWorkflow() {
-    let input = document.getElementById('execInput').value.trim();
-    if (!input && !uploadedFileContent) { alert('Please enter an input prompt or attach a file.'); return; }
-    if (uploadedFileContent) {
-        input = input ? input + '\n\n[Attached File Content]\n' + uploadedFileContent : uploadedFileContent;
-    }
-
-    const btn = document.getElementById('executeBtn');
-    const status = document.getElementById('execStatus');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Executing...';
-    status.textContent = 'Starting orchestration...';
-    status.style.color = 'var(--accent)';
-
-    try {
-        const res = await fetch('/api/solutions/' + SOLUTION_ID + '/execute', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input, broadcastMode: document.getElementById('broadcastMode').checked })
-        });
-        const data = await res.json();
-
-        if (!res.ok) {
-            status.textContent = data.error || 'Execution failed.';
-            status.style.color = '#ef4444';
-            btn.disabled = false;
-            btn.innerHTML = '&#x25B6; Execute Pipeline';
-            return;
-        }
-
-        // Start log polling for real-time visualization
-        if (data.workflow_id) {
-            startLogPolling(data.workflow_id);
-        }
-
-        status.textContent = 'Pipeline running...';
-        status.style.color = 'var(--accent)';
-    } catch (err) {
-        status.textContent = 'Error: ' + err.message;
-        status.style.color = '#ef4444';
-    }
-
-    btn.disabled = false;
-    btn.innerHTML = '&#x25B6; Execute Pipeline';
-}
+// (Consolidated executeWorkflow with log polling and mock mode - defined above)
 
 // Helper to highlight log entries
 function highlightLogEntry(agentName) {
@@ -1383,6 +1387,18 @@ console.log('[INIT] Starting initialization');
 
 function initAll() {
     try {
+        // Restore mock mode preference from localStorage
+        const savedMockMode = localStorage.getItem('useMockMode');
+        const mockCheckbox = document.getElementById('useMockMode');
+        if (mockCheckbox) {
+            if (savedMockMode === 'false') {
+                mockCheckbox.checked = false;
+                toggleMockMode(mockCheckbox);
+            } else {
+                mockCheckbox.checked = true;
+            }
+        }
+
         renderGraphStructure();
         loadAvailableAgents();
         const ddSuccess = initDragDrop();

@@ -17,8 +17,15 @@ from datetime import datetime
 
 from .graph import (
     orchestrator, WorkflowState,
-    build_orchestrator_graph
+    build_orchestrator_graph, get_orchestrator
 )
+
+# Import mock agents
+try:
+    from .mock_agents import get_mock_agent_list
+except ImportError:
+    def get_mock_agent_list():
+        return []
 
 # Stub out unused imports for compatibility
 def initialize_tools(): pass
@@ -60,6 +67,7 @@ class StartWorkflowRequest(BaseModel):
     agent_order: Optional[List[str]] = None
     agent_specs: Optional[List[Dict[str, str]]] = None  # Dynamic agents: [{"name": "agent", "endpoint": "endpoint"}]
     context: Optional[Dict[str, Any]] = None
+    use_mock_mode: Optional[bool] = True  # Use mock endpoints (default: True)
 
 
 class WorkflowResponse(BaseModel):
@@ -103,51 +111,62 @@ class InterviewResponse(BaseModel):
 # ============================================================================
 
 def run_workflow_thread(workflow_id: str, initial_state: dict):
-    """Run workflow in background thread with proper state persistence"""
+    """Run workflow in background thread with real-time state updates.
+
+    Uses graph.stream() with stream_mode="values" to get full state snapshots
+    after each node, updating the workflows_store in real-time so the UI sees
+    live progress instead of waiting for the entire workflow to complete.
+    """
     try:
-        from orchestration.graph import build_orchestrator_graph
-
-        print(f"[WORKFLOW-{workflow_id[:8]}] START: initializing", flush=True)
-
-        graph = build_orchestrator_graph()
+        graph = get_orchestrator()
         config = {"configurable": {"thread_id": workflow_id}}
 
-        print(f"[WORKFLOW-{workflow_id[:8]}] INVOKE: calling graph.invoke()...", flush=True)
-        final_state = graph.invoke(initial_state, config)
-        print(f"[WORKFLOW-{workflow_id[:8]}] RETURNED: graph.invoke() completed", flush=True)
+        print(f"[WF-{workflow_id[:8]}] START stream", flush=True)
+        sys.stdout.flush()
 
-        # Ensure final_state is a dict
-        if hasattr(final_state, 'items'):
-            final_state = dict(final_state)
+        # Save initial state
+        workflows_store[workflow_id]["state"] = dict(initial_state)
+        workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
+        print(f"[WF-{workflow_id[:8]}] INIT", flush=True)
+        sys.stdout.flush()
 
-        # Extract state info BEFORE saving
-        execution_log = final_state.get('execution_log', [])
-        results = final_state.get('results', {})
-        status = final_state.get('status', 'COMPLETED')
+        # Use stream with mode="values" to get full state after each node
+        # This enables real-time UI updates
+        node_count = 0
+        for state_snapshot in graph.stream(initial_state, config, stream_mode="values"):
+            if isinstance(state_snapshot, dict):
+                node_count += 1
+                # Update store in real-time after each node
+                workflows_store[workflow_id]["state"] = dict(state_snapshot)
+                workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
 
-        print(f"[WORKFLOW-{workflow_id[:8]}] STATE: status={status}, results={len(results)}, logs={len(execution_log)}", flush=True)
+                # Log progress
+                agent = state_snapshot.get("current_agent", "?")
+                logs = len(state_snapshot.get("execution_log", []))
+                results = len(state_snapshot.get("results", {}))
+                status = state_snapshot.get("status", "RUNNING")
+                print(f"[WF-{workflow_id[:8]}] STREAM[{node_count}]: agent={agent} status={status} logs={logs} results={results}", flush=True)
+                sys.stdout.flush()
 
-        # Force ensure status is COMPLETED
-        if status != "COMPLETED":
-            final_state["status"] = "COMPLETED"
-            print(f"[WORKFLOW-{workflow_id[:8]}] UPDATED: status set to COMPLETED", flush=True)
+        # Ensure final status is COMPLETED
+        final = workflows_store[workflow_id]["state"]
+        if final.get("status") != "COMPLETED":
+            final["status"] = "COMPLETED"
 
-        # Save to store - this is critical
-        workflows_store[workflow_id]["state"] = final_state
         workflows_store[workflow_id]["last_updated"] = datetime.now().isoformat()
 
-        # Verify it was saved
-        saved_state = workflows_store[workflow_id]["state"]
-        saved_logs = len(saved_state.get('execution_log', []))
-        saved_results = len(saved_state.get('results', {}))
-        print(f"[WORKFLOW-{workflow_id[:8]}] SAVED: verified logs={saved_logs}, results={saved_results}", flush=True)
-        print(f"[WORKFLOW-{workflow_id[:8]}] ✓ COMPLETE", flush=True)
+        # Verify final state
+        final = workflows_store[workflow_id]["state"]
+        logs = len(final.get("execution_log", []))
+        results = len(final.get("results", {}))
+        print(f"[WF-{workflow_id[:8]}] DONE: logs={logs} results={results}", flush=True)
+        print(f"[WF-{workflow_id[:8]}] ✓ OK", flush=True)
         sys.stdout.flush()
 
     except Exception as e:
+        print(f"[WF-{workflow_id[:8]}] ERROR: {str(e)}", flush=True)
         import traceback
-        print(f"[WORKFLOW-ERROR] {workflow_id}: {str(e)}", flush=True)
-        print(traceback.format_exc(), flush=True)
+        traceback.print_exc()
         sys.stdout.flush()
         if workflow_id in workflows_store:
             workflows_store[workflow_id]["state"]["status"] = "FAILED"
@@ -185,6 +204,7 @@ async def start_workflow(request: StartWorkflowRequest):
         "supervisor_decisions": [],
         "status": "RUNNING",
         "error": None,
+        "use_mock_mode": request.use_mock_mode if request.use_mock_mode is not None else True,
     }
 
     # Store workflow metadata
@@ -217,7 +237,11 @@ async def start_workflow(request: StartWorkflowRequest):
 
 @app.get("/orchestration/{workflow_id}")
 async def get_workflow(workflow_id: str):
-    """Get current status of a workflow"""
+    """Get current status of a workflow.
+
+    Returns real-time data from the workflows_store, which is continuously
+    updated by the background workflow thread using graph.stream().
+    """
     if workflow_id not in workflows_store:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
@@ -581,6 +605,25 @@ async def health_check():
         "version": "2.0.0",
         "phase": "Phase 3 (Databricks Integration)",
         "databricks": databricks_status
+    }
+
+
+@app.get("/mock-agents")
+async def list_mock_agents():
+    """List all available mock agents for testing."""
+    agents = get_mock_agent_list()
+    return {
+        "status": "success",
+        "count": len(agents),
+        "agents": agents,
+        "use_mock_mode": {
+            "description": "Set USE_MOCK environment variable",
+            "options": {
+                "auto": "Try Databricks first, fall back to mock if unavailable",
+                "always": "Always use mock agents (fast testing)",
+                "never": "Only use Databricks (production mode)"
+            }
+        }
     }
 
 

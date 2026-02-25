@@ -4,10 +4,22 @@ import time
 import uuid
 import asyncio
 import re
+import os
 from datetime import datetime, timezone
 from typing import TypedDict, Literal
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
+
+# Import mock agents
+try:
+    from orchestration.mock_agents import MOCK_AGENT_REGISTRY, get_mock_agent
+except ImportError:
+    MOCK_AGENT_REGISTRY = {}
+    def get_mock_agent(name):
+        return None
+
+# Mock mode configuration
+USE_MOCK = os.environ.get("USE_MOCK", "auto")  # auto | always | never
 
 # Databricks config
 DATABRICKS_HOST = "https://adb-1377606806062971.11.azuredatabricks.net"
@@ -34,6 +46,7 @@ class WorkflowState(TypedDict):
     supervisor_decisions: list
     status: str
     error: str
+    use_mock_mode: bool  # Use mock agents (default: True)
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -48,47 +61,158 @@ def log_entry(state, event_type, agent, details):
         "details": details
     }
 
+def call_agent(endpoint_name: str, content: str, context: dict = None, use_mock: bool = None) -> dict:
+    """Route to either Databricks or mock agent.
+
+    Args:
+        endpoint_name: Name of the Databricks endpoint
+        content: Input content to send to agent
+        context: Additional context (state dict)
+        use_mock: Override mock mode (if None, uses context['use_mock_mode'] or global USE_MOCK)
+    """
+    # Determine if we should use mock mode
+    if use_mock is None:
+        # Check if context has use_mock_mode (from state)
+        if context and isinstance(context, dict) and "use_mock_mode" in context:
+            use_mock = context.get("use_mock_mode", True)
+        else:
+            use_mock = USE_MOCK == "always"
+
+    if use_mock:
+        print(f"[MOCK] Using mock mode for {endpoint_name}")
+        return call_mock_agent(endpoint_name, content, context)
+
+    # Use real Databricks endpoint
+    return call_databricks_sync(endpoint_name, content)
+
+
+def map_endpoint_to_mock(endpoint_name: str) -> str:
+    """Map Databricks endpoint name to equivalent mock agent."""
+    mapping = {
+        "mit_structured_data_profiler_endpoint": "mock_data_profiler",
+        "mit_data_quality_agent_endpoint": "mock_data_quality",
+        "mit_data_classifier_endpoint": "mock_data_classifier",
+        "mit_autoloader_agent_endpoint": "mock_autoloader"
+    }
+    return mapping.get(endpoint_name, "mock_data_profiler")
+
+
+def call_mock_agent(endpoint_name: str, content: str, context: dict = None) -> dict:
+    """Call a mock agent and format response as Responses API."""
+    mock_key = map_endpoint_to_mock(endpoint_name)
+    agent = get_mock_agent(mock_key)
+
+    if not agent:
+        return {
+            "data": {"error": f"Mock agent not found: {mock_key}"},
+            "duration_ms": 0,
+            "status_code": 404,
+            "success": False,
+            "source": "MOCK"
+        }
+
+    try:
+        result = agent.process(content, context)
+        # Format as Responses API output
+        output = result.get("output", "")
+        return {
+            "data": {
+                "object": "response",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": output
+                            }
+                        ]
+                    }
+                ]
+            },
+            "duration_ms": result.get("duration_ms", 1000),
+            "status_code": 200,
+            "success": True,
+            "source": "MOCK",
+            "pii_detected": result.get("pii_detected", []),
+            "quality_score": result.get("quality_score")
+        }
+    except Exception as e:
+        print(f"[MOCK ERROR] {mock_key}: {e}")
+        return {
+            "data": {"error": f"Mock agent error: {str(e)}"},
+            "duration_ms": 0,
+            "status_code": 500,
+            "success": False,
+            "source": "MOCK"
+        }
+
+
 def call_databricks_sync(endpoint_name: str, content: str) -> dict:
-    """Synchronous HTTP call to Databricks endpoint."""
+    """Synchronous HTTP call to Databricks endpoint with exponential backoff retry."""
     url = f"{DATABRICKS_HOST}/serving-endpoints/{endpoint_name}/invocations"
     headers = {
         "Authorization": f"Bearer {DATABRICKS_TOKEN}",
         "Content-Type": "application/json"
     }
-    # Truncate content to 50KB to avoid payload limits
-    if len(content) > 50000:
-        content = content[:50000] + "\n\n[TRUNCATED - original was " + str(len(content)) + " chars]"
+    # Truncate content to 30KB to reduce token usage
+    if len(content) > 30000:
+        content = content[:30000] + "\n[TRUNCATED]"
 
     payload = {"input": [{"role": "user", "content": content}]}
 
+    max_retries = 3
     start = time.time()
-    try:
-        with httpx.Client(timeout=300) as client:
-            resp = client.post(url, json=payload, headers=headers)
-        duration = int((time.time() - start) * 1000)
 
-        if resp.status_code == 429:
-            print(f"[RATE LIMITED] {endpoint_name} - waiting 60s")
-            time.sleep(60)
+    for attempt in range(max_retries):
+        try:
             with httpx.Client(timeout=300) as client:
                 resp = client.post(url, json=payload, headers=headers)
+
+            resp_data = resp.json()
             duration = int((time.time() - start) * 1000)
 
-        return {
-            "data": resp.json(),
-            "duration_ms": duration,
-            "status_code": resp.status_code,
-            "success": resp.status_code == 200
-        }
-    except Exception as e:
-        duration = int((time.time() - start) * 1000)
-        print(f"[ERROR] {endpoint_name}: {str(e)}")
-        return {
-            "data": {"error": str(e)},
-            "duration_ms": duration,
-            "status_code": 500,
-            "success": False
-        }
+            # Check for rate limit (429 or REQUEST_LIMIT_EXCEEDED in response)
+            is_rate_limited = (resp.status_code == 429 or
+                             "REQUEST_LIMIT_EXCEEDED" in str(resp_data) or
+                             "rate limit" in str(resp_data).lower())
+
+            if is_rate_limited and attempt < max_retries - 1:
+                wait_time = 90 * (attempt + 1)  # 90s, 180s, 270s
+                print(f"[RATE LIMIT] {endpoint_name} attempt {attempt+1}/{max_retries}. Waiting {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+
+            return {
+                "data": resp_data,
+                "duration_ms": duration,
+                "status_code": resp.status_code,
+                "success": resp.status_code == 200 and "error_code" not in resp_data
+            }
+        except Exception as e:
+            duration = int((time.time() - start) * 1000)
+            if attempt < max_retries - 1:
+                print(f"[ERROR] {endpoint_name} attempt {attempt+1}: {str(e)}. Retrying in 60s...")
+                time.sleep(60)
+                continue
+            return {
+                "data": {"error": str(e)},
+                "duration_ms": duration,
+                "status_code": 500,
+                "success": False
+            }
+
+    # All retries failed - fall back to mock if enabled
+    if USE_MOCK == "auto":
+        print(f"[FALLBACK] Databricks unavailable, using mock for {endpoint_name}")
+        return call_mock_agent(endpoint_name, content)
+
+    return {
+        "data": {"error": "Max retries exceeded"},
+        "duration_ms": int((time.time() - start) * 1000),
+        "status_code": 429,
+        "success": False
+    }
 
 def extract_text(response_data: dict) -> str:
     """Extract text from Databricks Responses API output."""
@@ -125,7 +249,7 @@ def profile_node(state: WorkflowState) -> dict:
 
     # Truncate CSV to first 50 rows to avoid payload limits
     input_data = truncate_csv(state["input_data"], 50)
-    result = call_databricks_sync(endpoint, input_data)
+    result = call_agent(endpoint, input_data, state)
     output_text = extract_text(result["data"]) if result["success"] else json.dumps(result["data"])
 
     results["profiler"] = {
@@ -184,14 +308,25 @@ def quality_node(state: WorkflowState) -> dict:
     results = dict(state.get("results", {}))
 
     endpoint = ENDPOINT_MAP["quality"]
-    # Truncate CSV to first 50 rows
-    context = truncate_csv(state["input_data"], 50)
+
+    # Add rate limit cooldown log
+    log.append(log_entry(state, "AGENT_CALL", "quality", {
+        "message": "⏳ Waiting 90s for rate limit cooldown before calling quality agent..."
+    }))
+
+    # Wait 90 seconds to allow Databricks rate limit to reset
+    time.sleep(90)
+
+    # Send only first 5 rows of CSV + profiler summary (not full CSV)
+    csv_lines = state["input_data"].strip().split('\n')
+    sample = '\n'.join(csv_lines[:6])  # header + 5 rows
+    context = f"Here is a sample of the data (5 of {len(csv_lines)-1} rows):\n{sample}"
     if "profiler" in results:
-        context += "\n\n--- PROFILER RESULTS ---\n" + results["profiler"].get("output", "")[:2000]
+        context += "\n\n--- PROFILER ANALYSIS ---\n" + results["profiler"].get("output", "")[:3000]
 
     log.append(log_entry(state, "AGENT_CALL", "quality", {"endpoint": endpoint, "message": f"Calling {endpoint}..."}))
 
-    result = call_databricks_sync(endpoint, context)
+    result = call_agent(endpoint, context, state)
     output_text = extract_text(result["data"]) if result["success"] else json.dumps(result["data"])
 
     # Extract quality score
@@ -268,15 +403,27 @@ def classify_node(state: WorkflowState) -> dict:
     results = dict(state.get("results", {}))
 
     endpoint = ENDPOINT_MAP["classifier"]
-    # Only send column names and 10 sample rows
-    context = truncate_csv(state["input_data"], 10)
-    for key in ["profiler", "quality"]:
-        if key in results:
-            context += f"\n\n--- {key.upper()} RESULTS ---\n" + results[key].get("output", "")[:1000]
+
+    # Add rate limit cooldown log
+    log.append(log_entry(state, "AGENT_CALL", "classifier", {
+        "message": "⏳ Waiting 90s for rate limit cooldown before calling classifier agent..."
+    }))
+
+    # Wait 90 seconds to allow Databricks rate limit to reset
+    time.sleep(90)
+
+    # Send only column headers + 5 sample rows + profiler summary
+    csv_lines = state["input_data"].strip().split('\n')
+    header = csv_lines[0] if csv_lines else "unknown"
+    sample_rows = '\n'.join(csv_lines[1:6]) if len(csv_lines) > 1 else ""
+    context = f"Columns: {header}\nSample rows (5 of {len(csv_lines)-1} total):\n{sample_rows}"
+
+    if "profiler" in results:
+        context += "\n\nProfiler found: " + results["profiler"].get("output", "")[:2000]
 
     log.append(log_entry(state, "AGENT_CALL", "classifier", {"endpoint": endpoint, "message": f"Calling {endpoint}..."}))
 
-    result = call_databricks_sync(endpoint, context)
+    result = call_agent(endpoint, context, state)
     output_text = extract_text(result["data"]) if result["success"] else json.dumps(result["data"])
 
     # Detect PII
@@ -339,19 +486,28 @@ def autoloader_node(state: WorkflowState) -> dict:
     results = dict(state.get("results", {}))
 
     endpoint = ENDPOINT_MAP["autoloader"]
-    # Send only metadata (column names, row count, summaries)
+
+    # Add rate limit cooldown log
+    log.append(log_entry(state, "AGENT_CALL", "autoloader", {
+        "message": "⏳ Waiting 90s for rate limit cooldown before calling autoloader agent..."
+    }))
+
+    # Wait 90 seconds to allow Databricks rate limit to reset
+    time.sleep(90)
+
+    # Send only metadata: dataset info + summaries from previous agents
     lines = state["input_data"].strip().split('\n')
     row_count = len(lines) - 1
     column_names = lines[0] if lines else "unknown"
-    context = f"Load CSV data with {row_count} rows and columns: {column_names}. Source: claims.csv\n\n"
+    context = f"Load dataset with {row_count} rows. Columns: {column_names}\nFormat: CSV"
 
     for key in ["profiler", "quality", "classifier"]:
         if key in results:
-            context += f"--- {key.upper()} RESULTS ---\n" + results[key].get("output", "")[:1000] + "\n\n"
+            context += f"\n{key}: " + results[key].get("output", "")[:1000]
 
     log.append(log_entry(state, "AGENT_CALL", "autoloader", {"endpoint": endpoint, "message": f"Calling {endpoint}..."}))
 
-    result = call_databricks_sync(endpoint, context)
+    result = call_agent(endpoint, context, state)
     output_text = extract_text(result["data"]) if result["success"] else json.dumps(result["data"])
 
     results["autoloader"] = {
@@ -449,4 +605,27 @@ def build_orchestrator_graph():
 
     return graph.compile(checkpointer=InMemorySaver())
 
-orchestrator = build_orchestrator_graph()
+
+# ============================================================================
+# MODULE-LEVEL SINGLETON GRAPH
+# ============================================================================
+# Create a single shared graph instance to maintain consistent checkpointer
+# across all threads (workflow execution and GET status queries)
+
+_singleton_graph = None
+
+def get_orchestrator():
+    """Get or create the singleton graph instance.
+
+    This ensures all threads use the same LangGraph instance with the same
+    InMemorySaver checkpointer, enabling real-time state updates during streaming.
+    """
+    global _singleton_graph
+    if _singleton_graph is None:
+        _singleton_graph = build_orchestrator_graph()
+        print("[GRAPH] Singleton graph created", flush=True)
+    return _singleton_graph
+
+
+# For backwards compatibility
+orchestrator = get_orchestrator()

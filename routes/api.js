@@ -443,7 +443,10 @@ router.post('/solutions/:id/execute', upload.single('file'), async (req, res) =>
                 return agentNameMap[stepName] || agentNameMap[endpointName] || stepName;
             });
 
-        console.log(`[Execute] Starting LangGraph orchestration for solution ${solution.id}, agents: ${agentOrder.join(', ')} (mapped from steps: ${solution.steps.map(s => s.name).join(', ')})`);
+        // Get mock mode preference from request (default: true for mock mode)
+        const useMockMode = req.body.useMockMode !== false;
+
+        console.log(`[Execute] Starting LangGraph orchestration for solution ${solution.id}, agents: ${agentOrder.join(', ')} (mapped from steps: ${solution.steps.map(s => s.name).join(', ')}), mode: ${useMockMode ? 'MOCK' : 'REAL'}`);
 
         // Call the Python LangGraph orchestrator service
         const orchestrationUrl = 'http://localhost:8001/orchestration/start';
@@ -451,7 +454,8 @@ router.post('/solutions/:id/execute', upload.single('file'), async (req, res) =>
             user_id: 'ui-user',
             input_data: inputData,
             agent_order: agentOrder,
-            context: { solution_id: solution.id }
+            context: { solution_id: solution.id },
+            use_mock_mode: useMockMode
         };
 
         try {
