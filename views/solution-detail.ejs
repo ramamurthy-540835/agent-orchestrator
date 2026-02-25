@@ -1561,80 +1561,92 @@ async function loadAvailableAgents() {
     }
 
     try {
-        const wsId = '<%= solution.workspaceId || "default-workspace" %>';
-        console.log('[AGENTS] Fetching from: /api/workspaces/' + wsId + '/endpoints');
+        console.log('[AGENTS] Fetching from: /api/agents/inventory');
 
-        const resp = await fetch('/api/workspaces/' + wsId + '/endpoints');
+        const resp = await fetch('/api/agents/inventory');
         const data = await resp.json();
-        console.log('[AGENTS] Response:', data);
+        console.log('[AGENTS] Full inventory loaded:', data.summary);
 
-        if (!data.endpoints || data.endpoints.length === 0) {
-            console.log('[AGENTS] No endpoints from API, using fallback demo agents');
-            // Fallback to demo agents if API returns empty
-            const demoAgents = [
-                { name: 'mit_structured_data_profiler_endpoint', state: 'READY' },
-                { name: 'mit_data_quality_agent_endpoint', state: 'READY' },
-                { name: 'mit_data_classifier_endpoint', state: 'READY' },
-                { name: 'mit_autoloader_agent_endpoint', state: 'READY' }
-            ];
-            renderAgentsList(demoAgents);
+        if (!data.agents || data.agents.length === 0) {
+            console.log('[AGENTS] No agents from API');
+            list.innerHTML = '<div style="color:#9CA3AF;font-size:10px;padding:8px;text-align:center;">No agents available</div>';
             return;
         }
 
-        renderAgentsList(data.endpoints);
+        // Filter: show both real Databricks and mock agents, prioritizing real ones
+        const agents = data.agents.map(agent => ({
+            name: agent.name,
+            state: agent.state,
+            source: agent.source,
+            display_name: agent.display_name
+        }));
+
+        renderAgentsList(agents);
     } catch(e) {
         console.error('[AGENTS] Error loading agents:', e);
-        // Use fallback demo agents on error
-        const demoAgents = [
-            { name: 'mit_structured_data_profiler_endpoint', state: 'READY' },
-            { name: 'mit_data_quality_agent_endpoint', state: 'READY' },
-            { name: 'mit_data_classifier_endpoint', state: 'READY' },
-            { name: 'mit_autoloader_agent_endpoint', state: 'READY' }
-        ];
-        renderAgentsList(demoAgents);
+        list.innerHTML = '<div style="color:#ef4444;font-size:10px;padding:8px;text-align:center;">Error loading agents</div>';
     }
 }
 
-function renderAgentsList(endpoints) {
+function renderAgentsList(agents) {
     const list = document.getElementById('available-agents-list');
     if (!list) return;
 
-    // Sort: READY first, then by name
-    const sorted = endpoints.sort((a, b) => {
+    // Sort: Mock agents (READY) first, then Real agents, then by name
+    const sorted = agents.sort((a, b) => {
+        // Mock agents first (ready)
+        if (a.source === 'MOCK' && b.source !== 'MOCK') return -1;
+        if (a.source !== 'MOCK' && b.source === 'MOCK') return 1;
+        // Then READY state
         if (a.state === 'READY' && b.state !== 'READY') return -1;
         if (a.state !== 'READY' && b.state === 'READY') return 1;
+        // Then by name
         return (a.name || '').localeCompare(b.name || '');
     });
 
-    // Group agents by state
-    const readyAgents = sorted.filter(ep => ep.state === 'READY');
-    const stoppedAgents = sorted.filter(ep => ep.state !== 'READY');
+    // Group: Mock READY, then Real agents by state
+    const mockReady = sorted.filter(a => a.source === 'MOCK' && a.state === 'READY');
+    const realReady = sorted.filter(a => a.source !== 'MOCK' && a.state === 'READY');
+    const realStopped = sorted.filter(a => a.source !== 'MOCK' && a.state !== 'READY');
 
     // Build HTML
-    let html = '<div style="font-size: 10px; color: #9CA3AF; margin-bottom: 8px; padding: 6px 4px; border-bottom: 1px solid #E5E7EB; font-weight: 500;">✓ READY</div>';
+    let html = '';
 
-    // Show ready agents
-    if (readyAgents.length > 0) {
-        html += readyAgents.map(ep => `
+    // Show mock agents section
+    if (mockReady.length > 0) {
+        html += '<div style="font-size: 10px; color: #6366F1; margin-bottom: 8px; padding: 6px 4px; border-bottom: 1px solid #E5E7EB; font-weight: 500;">🔵 MOCK</div>';
+        html += mockReady.map(ep => `
+            <div style="background:#EEF2FF;border:1px solid #C7D2FE;border-radius:6px;padding:8px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:6px;">
+                <div style="font-size:11px;flex:1;">
+                    <div style="font-weight:500;color:#1F2937;">🤖 ${(ep.display_name || ep.name || '').substring(0,18)}</div>
+                    <div style="color:#6366F1;font-size:9px;">Mock</div>
+                </div>
+                <button onclick="addAgentStep('${ep.name}')" style="background:#6366F1;color:white;border:none;border-radius:4px;padding:4px 8px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:500;">+ Add</button>
+            </div>
+        `).join('');
+    }
+
+    // Show real READY agents
+    if (realReady.length > 0) {
+        html += '<div style="font-size: 10px; color: #10B981; margin-top: 10px; margin-bottom: 8px; padding: 6px 4px; border-bottom: 1px solid #E5E7EB; font-weight: 500;">✓ READY</div>';
+        html += realReady.map(ep => `
             <div style="background:white;border:1px solid #D1FAE5;border-radius:6px;padding:8px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:6px;">
                 <div style="font-size:11px;flex:1;">
-                    <div style="font-weight:500;color:#1F2937;">🤖 ${(ep.name || '').substring(0,16)}</div>
+                    <div style="font-weight:500;color:#1F2937;">🤖 ${(ep.display_name || ep.name || '').substring(0,18)}</div>
                     <div style="color:#10B981;font-size:9px;">Ready</div>
                 </div>
                 <button onclick="addAgentStep('${ep.name}')" style="background:#3B82F6;color:white;border:none;border-radius:4px;padding:4px 8px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:500;">+ Add</button>
             </div>
         `).join('');
-    } else {
-        html += '<div style="color:#9CA3AF;font-size:10px;padding:8px;text-align:center;">No ready agents</div>';
     }
 
     // Show stopped agents if any
-    if (stoppedAgents.length > 0) {
+    if (realStopped.length > 0) {
         html += '<div style="font-size: 10px; color: #9CA3AF; margin-top: 10px; margin-bottom: 8px; padding: 6px 4px; border-top: 1px solid #E5E7EB; border-bottom: 1px solid #E5E7EB; font-weight: 500;">⊘ STOPPED</div>';
-        html += stoppedAgents.map(ep => `
+        html += realStopped.map(ep => `
             <div style="background:#F3F4F6;border:1px solid #E5E7EB;border-radius:6px;padding:8px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;gap:6px;opacity:0.6;">
                 <div style="font-size:11px;flex:1;">
-                    <div style="font-weight:500;color:#9CA3AF;">🤖 ${(ep.name || '').substring(0,16)}</div>
+                    <div style="font-weight:500;color:#9CA3AF;">🤖 ${(ep.display_name || ep.name || '').substring(0,18)}</div>
                     <div style="color:#9CA3AF;font-size:9px;">${ep.state || 'Stopped'}</div>
                 </div>
                 <button style="background:#D1D5DB;color:#9CA3AF;border:none;border-radius:4px;padding:4px 8px;font-size:10px;cursor:not-allowed;white-space:nowrap;opacity:0.5;" disabled>+ Add</button>
@@ -1642,8 +1654,12 @@ function renderAgentsList(endpoints) {
         `).join('');
     }
 
+    if (html === '') {
+        html = '<div style="color:#9CA3AF;font-size:10px;padding:8px;text-align:center;">No agents available</div>';
+    }
+
     list.innerHTML = html;
-    console.log('[AGENTS] Rendered', readyAgents.length, 'ready agents,', stoppedAgents.length, 'stopped agents');
+    console.log('[AGENTS] Rendered', mockReady.length, 'mock agents,', realReady.length, 'ready real agents,', realStopped.length, 'stopped agents');
 }
 
 // ─── Agent Inventory Modal ───
