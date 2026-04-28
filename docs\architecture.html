@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>agent-orchestrator - Architecture Diagram</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        .mermaid { width: 100%; height: auto; }
+    </style>
+</head>
+<body>
+    <h1>agent-orchestrator Architecture Diagram</h1>
+    <div class="mermaid">
+%%{init: {'flowchart': {'nodeSpacing': 50, 'rankSpacing': 70}}}%%
+flowchart LR
+  subgraph UI_Layer ["UI Layer"]
+    A["User Interface (Web App)
+Serves interactive dashboards & controls"]
+  end
+  subgraph API_Layer ["API Layer"]
+    B["Orchestrator API Gateway (Node.js/Express)
+Handles UI requests & routes to Engine"]
+  end
+  subgraph Processing_Layer ["Processing Layer"]
+    C["Agent Orchestration Engine (Python)
+Manages lifecycle, workflow & task dispatch for AI Agents"]
+  end
+  subgraph AI_Layer ["AI Layer"]
+    D["Task-Specific AI Agents
+Execute discrete tasks, interact with LLM, process data"]
+    E["External LLM Service (e.g., Claude)
+Provides generative AI capabilities to agents/engine"]
+  end
+  subgraph Data_Storage_Layer ["Data/Storage Layer"]
+    F["Agent State & Config Database
+Persists agent state, task queues, logs, and configurations"]
+  end
+  A --> B
+  B --> C
+  C --> D
+  C --> F
+  F --> C
+  D --> E
+  D --> F
+  C --> E
+    </div>
+    <script>
+        mermaid.initialize({ startOnLoad: true });
+    </script>
+</body>
+</html>
